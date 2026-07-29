@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SERVICE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+SERVICE_FILE="$SERVICE_DIR/watchfrog.service"
+
+systemctl --user disable --now watchfrog.service 2>/dev/null || true
+if [[ -f "$SERVICE_FILE" ]]; then
+  rm "$SERVICE_FILE"
+fi
+systemctl --user daemon-reload
+
+echo "Der WatchFrog-Autostart wurde entfernt. Konfiguration und Logs bleiben erhalten."

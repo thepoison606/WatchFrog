@@ -1,0 +1,38 @@
+# WatchFrog configuration
+[monitor]
+# Alert only when PCM audio is still being received below the level threshold.
+silence_seconds = 5.0
+
+# -60 dBFS detects near-digital silence without unnecessarily treating normal
+# quiet passages as an outage. Adjust as needed.
+silence_threshold_db = -60.0
+
+# Audio must be present for this long before a recovery notification is sent.
+recovery_seconds = 0.5
+reconnect_delay_seconds = 1.0
+timezone = "Europe/Berlin"
+notify_recovery = true
+startup_message = true
+ffmpeg_path = "ffmpeg"
+sample_rate = 8000
+
+[telegram]
+bot_token = "INSERT_BOT_TOKEN_HERE"
+chat_id = "INSERT_CHAT_ID_HERE"
+
+[healthchecks]
+# Optional: personal ping URL from Healthchecks.io.
+ping_url = "INSERT_HEALTHCHECKS_URL_HERE"
+
+[streams]
+# Replace this example when configuring the file manually. The setup assistants
+# ask for one or more stream names and URLs automatically.
+"Example Stream" = "https://example.com/audio-stream.m3u"
+
+# Optional timing values per stream. Omitted values are inherited from [monitor].
+# Uncomment the desired lines to enable an override.
+#
+# [stream_overrides."Example Stream"]
+# silence_seconds = 8.0
+# recovery_seconds = 1.0
+# reconnect_delay_seconds = 2.0

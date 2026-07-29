@@ -1,0 +1,10 @@
+# Local WatchFrog data
+config.toml
+logs/
+__pycache__/
+tests/__pycache__/
+*.pyc
+build/
+dist/
+*.egg-info/
+*.whl

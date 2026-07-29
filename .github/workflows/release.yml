@@ -1,0 +1,46 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Test and release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Build portable ZIP
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          git archive \
+            --format=zip \
+            --prefix=WatchFrog/ \
+            --output="WatchFrog-${TAG_NAME}.zip" \
+            HEAD
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          gh release create "${TAG_NAME}" \
+            "WatchFrog-${TAG_NAME}.zip" \
+            --generate-notes \
+            --title "WatchFrog ${TAG_NAME}"
