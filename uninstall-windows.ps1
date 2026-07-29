@@ -1,4 +1,4 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
 
 $TaskName = "WatchFrog"
 $Existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue

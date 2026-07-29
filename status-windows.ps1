@@ -1,4 +1,4 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
 
 $TaskName = "WatchFrog"
 $ConfigRoot = Join-Path $env:APPDATA "WatchFrog"
