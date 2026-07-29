@@ -88,6 +88,7 @@ SSL_CONTEXT = build_ssl_context()
 @dataclass(frozen=True)
 class MonitorConfig:
     silence_seconds: float
+    reception_outage_seconds: float
     silence_threshold_db: float
     recovery_seconds: float
     reconnect_delay_seconds: float
@@ -103,6 +104,7 @@ class StreamConfig:
     name: str
     url: str
     silence_seconds: float
+    reception_outage_seconds: float
     recovery_seconds: float
     reconnect_delay_seconds: float
 
@@ -179,6 +181,9 @@ def load_config(path: Path) -> AppConfig:
 
     try:
         silence_seconds = float(monitor_data.get("silence_seconds", 5.0))
+        reception_outage_seconds = float(
+            monitor_data.get("reception_outage_seconds", 600.0)
+        )
         silence_threshold_db = float(
             monitor_data.get("silence_threshold_db", -60.0)
         )
@@ -198,6 +203,8 @@ def load_config(path: Path) -> AppConfig:
 
     if silence_seconds <= 0:
         raise ValueError("silence_seconds must be greater than 0.")
+    if reception_outage_seconds <= 0:
+        raise ValueError("reception_outage_seconds must be greater than 0.")
     if not -120.0 <= silence_threshold_db <= 0.0:
         raise ValueError("silence_threshold_db must be between -120 and 0.")
     if recovery_seconds <= 0:
@@ -221,6 +228,7 @@ def load_config(path: Path) -> AppConfig:
             )
         unknown_keys = set(override) - {
             "silence_seconds",
+            "reception_outage_seconds",
             "recovery_seconds",
             "reconnect_delay_seconds",
         }
@@ -232,6 +240,12 @@ def load_config(path: Path) -> AppConfig:
         try:
             stream_silence_seconds = float(
                 override.get("silence_seconds", silence_seconds)
+            )
+            stream_reception_outage_seconds = float(
+                override.get(
+                    "reception_outage_seconds",
+                    reception_outage_seconds,
+                )
             )
             stream_recovery_seconds = float(
                 override.get("recovery_seconds", recovery_seconds)
@@ -250,6 +264,10 @@ def load_config(path: Path) -> AppConfig:
             raise ValueError(
                 f"{clean_name}: silence_seconds must be greater than 0."
             )
+        if stream_reception_outage_seconds <= 0:
+            raise ValueError(
+                f"{clean_name}: reception_outage_seconds must be greater than 0."
+            )
         if stream_recovery_seconds <= 0:
             raise ValueError(
                 f"{clean_name}: recovery_seconds must be greater than 0."
@@ -262,6 +280,7 @@ def load_config(path: Path) -> AppConfig:
             name=clean_name,
             url=clean_url,
             silence_seconds=stream_silence_seconds,
+            reception_outage_seconds=stream_reception_outage_seconds,
             recovery_seconds=stream_recovery_seconds,
             reconnect_delay_seconds=stream_reconnect_delay_seconds,
         )
@@ -298,6 +317,7 @@ def load_config(path: Path) -> AppConfig:
     return AppConfig(
         monitor=MonitorConfig(
             silence_seconds=silence_seconds,
+            reception_outage_seconds=reception_outage_seconds,
             silence_threshold_db=silence_threshold_db,
             recovery_seconds=recovery_seconds,
             reconnect_delay_seconds=reconnect_delay_seconds,
@@ -477,6 +497,10 @@ class StreamState:
         self.config = config
         self.notifier = notifier
         self.last_pcm_mono: float | None = None
+        self.last_pcm_wall: datetime | None = None
+        self.reception_missing_since_mono: float | None = None
+        self.reception_missing_since_wall: datetime | None = None
+        self.reception_outage_alerted = False
         self.outage_started_wall: datetime | None = None
         self.silence_started_wall: datetime | None = None
         self.silent_audio_seconds = 0.0
@@ -487,7 +511,86 @@ class StreamState:
         return self.outage_started_wall is not None
 
     def observe_pcm(self) -> None:
-        self.last_pcm_mono = time.monotonic()
+        now_mono = time.monotonic()
+        now_wall = datetime.now(self.config.timezone)
+        if self.reception_outage_alerted:
+            assert self.reception_missing_since_mono is not None
+            outage_duration = max(
+                0.0,
+                now_mono - self.reception_missing_since_mono,
+            )
+            message = (
+                "🟢 WatchFrog – Stream reception recovered\n"
+                f"Stream: {self.name}\n"
+                f"Recovered: {format_timestamp(now_wall)}\n"
+                f"Reception outage duration: {format_duration(outage_duration)}"
+            )
+            LOGGER.info(
+                "%s: stream reception recovered after %.1f s",
+                self.name,
+                outage_duration,
+            )
+            if self.config.notify_recovery:
+                self.notifier.enqueue(message)
+        self.reception_missing_since_mono = None
+        self.reception_missing_since_wall = None
+        self.reception_outage_alerted = False
+        self.last_pcm_mono = now_mono
+        self.last_pcm_wall = now_wall
+
+    def mark_reception_missing(self) -> None:
+        if self.reception_missing_since_mono is not None:
+            return
+        now_mono = time.monotonic()
+        now_wall = datetime.now(self.config.timezone)
+        self.reception_missing_since_mono = (
+            self.last_pcm_mono
+            if self.last_pcm_mono is not None
+            else now_mono
+        )
+        self.reception_missing_since_wall = (
+            self.last_pcm_wall
+            if self.last_pcm_wall is not None
+            else now_wall
+        )
+
+    def reception_alert_delay(self) -> float | None:
+        if self.reception_outage_alerted:
+            return None
+        self.mark_reception_missing()
+        assert self.reception_missing_since_mono is not None
+        elapsed = time.monotonic() - self.reception_missing_since_mono
+        return max(0.0, self.stream.reception_outage_seconds - elapsed)
+
+    def check_reception_outage(self) -> None:
+        if self.reception_outage_alerted:
+            return
+        self.mark_reception_missing()
+        assert self.reception_missing_since_mono is not None
+        assert self.reception_missing_since_wall is not None
+        now_mono = time.monotonic()
+        elapsed = max(0.0, now_mono - self.reception_missing_since_mono)
+        if elapsed + 1e-9 < self.stream.reception_outage_seconds:
+            return
+
+        now_wall = datetime.now(self.config.timezone)
+        self.reception_outage_alerted = True
+        message = (
+            "🔴 WatchFrog – Stream reception lost\n"
+            f"Stream: {self.name}\n"
+            f"Started: {format_timestamp(self.reception_missing_since_wall)}\n"
+            f"Detected: {format_timestamp(now_wall)}\n"
+            f"No received audio for at least: "
+            f"{format_duration(self.stream.reception_outage_seconds)}\n"
+            "Reason: No decodable audio data has been received; "
+            "reconnect attempts continue."
+        )
+        LOGGER.error(
+            "%s: no received audio data for %.1f s",
+            self.name,
+            elapsed,
+        )
+        self.notifier.enqueue(message)
 
     def observe_silence(self, duration: float) -> None:
         self.recovery_audio_seconds = 0.0
@@ -677,6 +780,8 @@ async def decode_stream_once(
                     break
                 buffer.clear()
                 state.reset_silence_candidate()
+                state.mark_reception_missing()
+                state.check_reception_outage()
                 if time.monotonic() - last_output_mono >= stall_restart_seconds:
                     raise RuntimeError(
                         f"ffmpeg has produced no audio data for "
@@ -712,6 +817,7 @@ async def monitor_stream(
     stop_event: asyncio.Event,
 ) -> None:
     state = StreamState(stream, config, notifier)
+    state.mark_reception_missing()
     retry_delay = stream.reconnect_delay_seconds
     while not stop_event.is_set():
         previous_pcm_mono = state.last_pcm_mono
@@ -728,7 +834,7 @@ async def monitor_stream(
         except Exception as exc:
             state.reset_silence_candidate()
             LOGGER.warning(
-                "%s: reception error (no Telegram alert): %s",
+                "%s: reception error; reconnecting: %s",
                 stream.name,
                 exc,
             )
@@ -737,12 +843,18 @@ async def monitor_stream(
             else:
                 retry_delay = min(max(1.0, retry_delay * 2), 30.0)
         if not stop_event.is_set():
+            state.check_reception_outage()
+            alert_delay = state.reception_alert_delay()
+            wait_timeout = retry_delay
+            if alert_delay is not None:
+                wait_timeout = min(wait_timeout, alert_delay)
             try:
                 await asyncio.wait_for(
-                    stop_event.wait(), timeout=retry_delay
+                    stop_event.wait(), timeout=wait_timeout
                 )
             except asyncio.TimeoutError:
                 pass
+            state.check_reception_outage()
 
 
 async def healthcheck_loop(
@@ -794,25 +906,30 @@ async def run_monitor(
         )
 
     LOGGER.info(
-        "%s starting: %d streams, default %.1f s / %.1f dBFS, ffmpeg %s",
+        "%s starting: %d streams, silence %.1f s / %.1f dBFS, "
+        "reception outage %.1f s, ffmpeg %s",
         APP_NAME,
         len(config.streams),
         config.monitor.silence_seconds,
         config.monitor.silence_threshold_db,
+        config.monitor.reception_outage_seconds,
         ffmpeg_path,
     )
     for stream in config.streams.values():
         if (
             stream.silence_seconds != config.monitor.silence_seconds
+            or stream.reception_outage_seconds
+            != config.monitor.reception_outage_seconds
             or stream.recovery_seconds != config.monitor.recovery_seconds
             or stream.reconnect_delay_seconds
             != config.monitor.reconnect_delay_seconds
         ):
             LOGGER.info(
-                "%s: custom timings alert %.1f s, recovery %.1f s, "
-                "reconnect %.1f s",
+                "%s: custom timings silence %.1f s, reception outage %.1f s, "
+                "recovery %.1f s, reconnect %.1f s",
                 stream.name,
                 stream.silence_seconds,
+                stream.reception_outage_seconds,
                 stream.recovery_seconds,
                 stream.reconnect_delay_seconds,
             )
@@ -823,6 +940,9 @@ async def run_monitor(
             "Default alert threshold: "
             f"{format_decimal(config.monitor.silence_seconds)} seconds "
             "of received silence\n"
+            "Reception outage alert: "
+            f"{format_duration(config.monitor.reception_outage_seconds)} "
+            "without received audio\n"
             f"Time: {format_timestamp(datetime.now(config.monitor.timezone))}"
         )
 

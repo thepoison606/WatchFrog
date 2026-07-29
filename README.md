@@ -2,11 +2,12 @@
 
 <p><img src="assets/watchfrog-app-icon-rounded.png" alt="WatchFrog icon" width="150" height="150" align="left" hspace="12">A silence detection watchdog for audio streams.</p>
 
-A Telegram alert is triggered only when a stream is still being received but its
-decoded audio level remains below the configured threshold for longer than the
-configured duration. Network interruptions, unavailable playlists, and decoder
-restarts are logged and automatically reconnected, but do not trigger an
-alert.<br clear="left">
+Telegram alerts distinguish between received silence and lost reception.
+Received silence triggers an alert after its configured duration. Network
+interruptions, unavailable playlists, and decoder restarts reconnect
+automatically; they trigger a separate reception-outage alert only when no
+decodable audio has been received for the configured duration, which defaults
+to ten minutes.<br clear="left">
 
 ## Requirements
 
@@ -92,12 +93,15 @@ Global defaults:
 ```toml
 [monitor]
 silence_seconds = 5.0
+reception_outage_seconds = 600.0
 silence_threshold_db = -60.0
 recovery_seconds = 0.5
 reconnect_delay_seconds = 1.0
 ```
 
 - `silence_seconds`: duration of received silence before an alert
+- `reception_outage_seconds`: duration without received audio before a separate
+  reception-outage alert; defaults to 600 seconds (10 minutes)
 - `silence_threshold_db`: RMS level threshold in dBFS
 - `recovery_seconds`: duration of audible audio before a recovery notification
 - `reconnect_delay_seconds`: delay before a new connection attempt
@@ -108,6 +112,7 @@ default:
 ```toml
 [stream_overrides."Main Stream"]
 silence_seconds = 8.0
+reception_outage_seconds = 900.0
 recovery_seconds = 1.0
 reconnect_delay_seconds = 2.0
 
@@ -115,9 +120,11 @@ reconnect_delay_seconds = 2.0
 silence_seconds = 12.0
 ```
 
-The name must exactly match an entry in `[streams]`. An active silence measurement
-is discarded when reception is interrupted; separate silence periods are not
-combined.
+The name must exactly match an entry in `[streams]`. An active silence
+measurement is discarded when reception is interrupted; separate silence
+periods are not combined. A reception-outage notification is sent only once per
+outage. When decodable audio returns, WatchFrog sends a separate recovery
+notification if `notify_recovery` is enabled.
 
 ## Healthchecks.io
 

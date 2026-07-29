@@ -20,6 +20,7 @@ class FakeNotifier:
 def monitor_config():
     return watchfrog.MonitorConfig(
         silence_seconds=5.0,
+        reception_outage_seconds=600.0,
         silence_threshold_db=-60.0,
         recovery_seconds=0.5,
         reconnect_delay_seconds=1.0,
@@ -34,6 +35,7 @@ def monitor_config():
 def stream_config(
     name="Example Stream",
     silence_seconds=5.0,
+    reception_outage_seconds=600.0,
     recovery_seconds=0.5,
     reconnect_delay_seconds=1.0,
 ):
@@ -41,6 +43,7 @@ def stream_config(
         name=name,
         url="https://example.test/stream.m3u",
         silence_seconds=silence_seconds,
+        reception_outage_seconds=reception_outage_seconds,
         recovery_seconds=recovery_seconds,
         reconnect_delay_seconds=reconnect_delay_seconds,
     )
@@ -122,6 +125,36 @@ class StreamStateTests(unittest.TestCase):
             state.observe_silence(0.1)
         self.assertEqual(notifier.messages, [])
 
+    def test_reception_outage_alerts_and_recovers(self):
+        notifier = FakeNotifier()
+        state = watchfrog.StreamState(
+            stream_config(reception_outage_seconds=600.0),
+            monitor_config(),
+            notifier,
+        )
+        with patch("watchfrog.time.monotonic", return_value=100.0):
+            state.mark_reception_missing()
+        with patch("watchfrog.time.monotonic", return_value=699.9):
+            state.check_reception_outage()
+        self.assertEqual(notifier.messages, [])
+
+        with patch("watchfrog.time.monotonic", return_value=700.0):
+            state.check_reception_outage()
+        self.assertEqual(len(notifier.messages), 1)
+        self.assertIn("WatchFrog – Stream reception lost", notifier.messages[0])
+        self.assertIn("10 min 00 s", notifier.messages[0])
+        with patch("watchfrog.time.monotonic", return_value=800.0):
+            state.check_reception_outage()
+        self.assertEqual(len(notifier.messages), 1)
+
+        with patch("watchfrog.time.monotonic", return_value=805.0):
+            state.observe_pcm()
+        self.assertEqual(len(notifier.messages), 2)
+        self.assertIn(
+            "WatchFrog – Stream reception recovered",
+            notifier.messages[1],
+        )
+
     def test_per_stream_times_are_used(self):
         notifier = FakeNotifier()
         state = watchfrog.StreamState(
@@ -146,6 +179,10 @@ class ConfigTests(unittest.TestCase):
         )
         self.assertEqual(len(config.streams), 1)
         self.assertEqual(config.streams["Example Stream"].silence_seconds, 5.0)
+        self.assertEqual(
+            config.streams["Example Stream"].reception_outage_seconds,
+            600.0,
+        )
         self.assertFalse(config.telegram.enabled)
 
     def test_stream_overrides_inherit_defaults(self):
@@ -154,6 +191,7 @@ class ConfigTests(unittest.TestCase):
         text += (
             '\n[stream_overrides."Example Stream"]\n'
             "silence_seconds = 8.0\n"
+            "reception_outage_seconds = 900.0\n"
             "recovery_seconds = 1.5\n"
         )
         with tempfile.TemporaryDirectory() as directory:
@@ -161,6 +199,10 @@ class ConfigTests(unittest.TestCase):
             path.write_text(text, encoding="utf-8")
             config = watchfrog.load_config(path)
         self.assertEqual(config.streams["Example Stream"].silence_seconds, 8.0)
+        self.assertEqual(
+            config.streams["Example Stream"].reception_outage_seconds,
+            900.0,
+        )
         self.assertEqual(config.streams["Example Stream"].recovery_seconds, 1.5)
         self.assertEqual(
             config.streams["Example Stream"].reconnect_delay_seconds,
