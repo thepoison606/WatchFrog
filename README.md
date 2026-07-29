@@ -1,12 +1,16 @@
 # WatchFrog
 
-<p><img src="assets/watchfrog-app-icon-rounded.png" alt="WatchFrog icon" width="24" height="24">&nbsp; A silence detection watchdog for audio streams.</p>
+<img src="assets/watchfrog-app-icon-rounded.png" alt="WatchFrog icon" width="150" height="150" align="left" hspace="12">
+
+A silence detection watchdog for audio streams.
 
 A Telegram alert is triggered only when a stream is still being received but its
 decoded audio level remains below the configured threshold for longer than the
 configured duration. Network interruptions, unavailable playlists, and decoder
 restarts are logged and automatically reconnected, but do not trigger an
 alert.
+
+<br clear="left">
 
 ## Requirements
 
