@@ -41,9 +41,6 @@ def default_config_path() -> Path:
     if portable.exists():
         return portable
 
-    if os.name == "nt":
-        base = Path(os.environ.get("APPDATA", Path.home()))
-        return base / "WatchFrog" / "config.toml"
     base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
     return base / "watchfrog" / "config.toml"
 
@@ -194,8 +191,7 @@ def load_config(path: Path) -> AppConfig:
         timezone = ZoneInfo(timezone_name)
     except ZoneInfoNotFoundError as exc:
         raise ValueError(
-            f"Zeitzone {timezone_name!r} ist nicht verfügbar. "
-            "Unter Windows bitte das Python-Paket 'tzdata' installieren."
+            f"Zeitzone {timezone_name!r} ist nicht verfügbar."
         ) from exc
     except (TypeError, ValueError, KeyError) as exc:
         raise ValueError(f"Ungültiger Wert im Abschnitt [monitor]: {exc}") from exc
@@ -1009,8 +1005,7 @@ def configure_interactively(config_path: Path) -> None:
     )
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(configured, encoding="utf-8")
-    if os.name != "nt":
-        config_path.chmod(0o600)
+    config_path.chmod(0o600)
     print(f"Konfiguration gespeichert: {config_path}")
 
 
@@ -1048,8 +1043,7 @@ def set_healthcheck_url(config_path: Path, ping_url: str) -> None:
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text("".join(lines), encoding="utf-8")
-    if os.name != "nt":
-        config_path.chmod(0o600)
+    config_path.chmod(0o600)
 
 
 def configure_healthcheck_interactively(config_path: Path) -> None:

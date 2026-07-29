@@ -51,17 +51,6 @@ The script installs a systemd user service:
 To keep the service running without an active login session, enable systemd
 lingering for the user.
 
-### Windows
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\setup-windows.ps1
-powershell -ExecutionPolicy Bypass -File .\status-windows.ps1
-```
-
-WatchFrog then runs as a scheduled task. `uninstall-windows.ps1` removes that
-task. You can install `ffmpeg`, for example, with
-`winget install Gyan.FFmpeg`.
-
 ### Portable or manual operation
 
 ```sh
@@ -80,7 +69,6 @@ watchfrog
 
 Without `--config`, WatchFrog uses:
 
-- Windows: `%APPDATA%\WatchFrog\config.toml`
 - Linux/macOS: `$XDG_CONFIG_HOME/watchfrog/config.toml` or
   `~/.config/watchfrog/config.toml`
 - portable mode: an existing `config.toml` next to `watchfrog.py`

@@ -9,35 +9,8 @@ permissions:
   contents: write
 
 jobs:
-  validate-windows:
-    name: Validate Windows scripts
-    runs-on: windows-latest
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Parse PowerShell scripts
-        shell: powershell
-        run: |
-          $failed = $false
-          Get-ChildItem -Path . -Filter "*.ps1" -File | ForEach-Object {
-              $tokens = $null
-              $parseErrors = $null
-              [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$parseErrors) | Out-Null
-              if ($parseErrors.Count -gt 0) {
-                  Write-Host "Parser errors in $($_.Name):"
-                  $parseErrors | ForEach-Object { Write-Host "  $($_.Message)" }
-                  $failed = $true
-              }
-          }
-          if ($failed) {
-              exit 1
-          }
-
   release:
     name: Test and release
-    needs: validate-windows
     runs-on: ubuntu-latest
 
     steps:

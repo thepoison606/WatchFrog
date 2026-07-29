@@ -4,13 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "watchfrog"
-version = "0.1.1"
+version = "0.1.2"
 description = "Monitor audio streams for received digital silence"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = [
-    "tzdata>=2024.1; platform_system == 'Windows'",
-]
 
 [project.scripts]
 watchfrog = "watchfrog:main"
