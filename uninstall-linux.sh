@@ -10,4 +10,4 @@ if [[ -f "$SERVICE_FILE" ]]; then
 fi
 systemctl --user daemon-reload
 
-echo "Der WatchFrog-Autostart wurde entfernt. Konfiguration und Logs bleiben erhalten."
+echo "WatchFrog autostart has been removed. The configuration and logs have been preserved."

@@ -54,8 +54,8 @@ def find_example_config() -> Path:
         if candidate.is_file():
             return candidate
     raise RuntimeError(
-        "config.example.toml wurde nicht gefunden. "
-        "Bitte das vollständige Programmpaket verwenden."
+        "config.example.toml was not found. "
+        "Please use the complete application package."
     )
 
 
@@ -138,7 +138,7 @@ class AppConfig:
 def _required_table(document: dict[str, Any], name: str) -> dict[str, Any]:
     value = document.get(name)
     if not isinstance(value, dict):
-        raise ValueError(f"Konfigurationsabschnitt [{name}] fehlt.")
+        raise ValueError(f"Configuration section [{name}] is missing.")
     return value
 
 
@@ -152,7 +152,7 @@ def _clean_secret(value: Any, placeholder: str) -> str:
 def validate_http_url(url: str, label: str) -> None:
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError(f"{label} muss eine vollständige HTTP- oder HTTPS-URL sein.")
+        raise ValueError(f"{label} must be a complete HTTP or HTTPS URL.")
 
 
 def load_config(path: Path) -> AppConfig:
@@ -161,21 +161,21 @@ def load_config(path: Path) -> AppConfig:
             document = tomllib.load(handle)
     except FileNotFoundError as exc:
         raise ValueError(
-            f"Konfiguration nicht gefunden: {path}\n"
-            "Bitte zuerst den Einrichtungsassistenten mit --configure starten."
+            f"Configuration not found: {path}\n"
+            "Please run the setup assistant with --configure first."
         ) from exc
     except tomllib.TOMLDecodeError as exc:
-        raise ValueError(f"Ungültige TOML-Konfiguration in {path}: {exc}") from exc
+        raise ValueError(f"Invalid TOML configuration in {path}: {exc}") from exc
 
     monitor_data = _required_table(document, "monitor")
     telegram_data = _required_table(document, "telegram")
     healthchecks_data = document.get("healthchecks", {})
     if not isinstance(healthchecks_data, dict):
-        raise ValueError("Konfigurationsabschnitt [healthchecks] ist ungültig.")
+        raise ValueError("Configuration section [healthchecks] is invalid.")
     streams_data = _required_table(document, "streams")
     stream_overrides_data = document.get("stream_overrides", {})
     if not isinstance(stream_overrides_data, dict):
-        raise ValueError("Konfigurationsabschnitt [stream_overrides] ist ungültig.")
+        raise ValueError("Configuration section [stream_overrides] is invalid.")
 
     try:
         silence_seconds = float(monitor_data.get("silence_seconds", 5.0))
@@ -191,21 +191,21 @@ def load_config(path: Path) -> AppConfig:
         timezone = ZoneInfo(timezone_name)
     except ZoneInfoNotFoundError as exc:
         raise ValueError(
-            f"Zeitzone {timezone_name!r} ist nicht verfügbar."
+            f"Timezone {timezone_name!r} is not available."
         ) from exc
     except (TypeError, ValueError, KeyError) as exc:
-        raise ValueError(f"Ungültiger Wert im Abschnitt [monitor]: {exc}") from exc
+        raise ValueError(f"Invalid value in section [monitor]: {exc}") from exc
 
     if silence_seconds <= 0:
-        raise ValueError("silence_seconds muss größer als 0 sein.")
+        raise ValueError("silence_seconds must be greater than 0.")
     if not -120.0 <= silence_threshold_db <= 0.0:
-        raise ValueError("silence_threshold_db muss zwischen -120 und 0 liegen.")
+        raise ValueError("silence_threshold_db must be between -120 and 0.")
     if recovery_seconds <= 0:
-        raise ValueError("recovery_seconds muss größer als 0 sein.")
+        raise ValueError("recovery_seconds must be greater than 0.")
     if reconnect_delay_seconds < 0:
-        raise ValueError("reconnect_delay_seconds darf nicht negativ sein.")
+        raise ValueError("reconnect_delay_seconds must not be negative.")
     if not 1000 <= sample_rate <= 48000:
-        raise ValueError("sample_rate muss zwischen 1000 und 48000 liegen.")
+        raise ValueError("sample_rate must be between 1000 and 48000.")
 
     streams: dict[str, StreamConfig] = {}
     for name, url in streams_data.items():
@@ -213,11 +213,11 @@ def load_config(path: Path) -> AppConfig:
         clean_url = str(url).strip()
         parsed = urllib.parse.urlparse(clean_url)
         if not clean_name or parsed.scheme not in {"http", "https"}:
-            raise ValueError(f"Ungültiger Stream-Eintrag: {name!r} = {url!r}")
+            raise ValueError(f"Invalid stream entry: {name!r} = {url!r}")
         override = stream_overrides_data.get(clean_name, {})
         if not isinstance(override, dict):
             raise ValueError(
-                f"Zeitüberschreibung für {clean_name!r} muss eine Tabelle sein."
+                f"Timing override for {clean_name!r} must be a table."
             )
         unknown_keys = set(override) - {
             "silence_seconds",
@@ -227,7 +227,7 @@ def load_config(path: Path) -> AppConfig:
         if unknown_keys:
             unknown = ", ".join(sorted(str(key) for key in unknown_keys))
             raise ValueError(
-                f"Unbekannte Zeitüberschreibung für {clean_name!r}: {unknown}"
+                f"Unknown timing override for {clean_name!r}: {unknown}"
             )
         try:
             stream_silence_seconds = float(
@@ -244,19 +244,19 @@ def load_config(path: Path) -> AppConfig:
             )
         except (TypeError, ValueError) as exc:
             raise ValueError(
-                f"Ungültige Zeitüberschreibung für {clean_name!r}: {exc}"
+                f"Invalid timing override for {clean_name!r}: {exc}"
             ) from exc
         if stream_silence_seconds <= 0:
             raise ValueError(
-                f"{clean_name}: silence_seconds muss größer als 0 sein."
+                f"{clean_name}: silence_seconds must be greater than 0."
             )
         if stream_recovery_seconds <= 0:
             raise ValueError(
-                f"{clean_name}: recovery_seconds muss größer als 0 sein."
+                f"{clean_name}: recovery_seconds must be greater than 0."
             )
         if stream_reconnect_delay_seconds < 0:
             raise ValueError(
-                f"{clean_name}: reconnect_delay_seconds darf nicht negativ sein."
+                f"{clean_name}: reconnect_delay_seconds must not be negative."
             )
         streams[clean_name] = StreamConfig(
             name=clean_name,
@@ -266,12 +266,12 @@ def load_config(path: Path) -> AppConfig:
             reconnect_delay_seconds=stream_reconnect_delay_seconds,
         )
     if not streams:
-        raise ValueError("In [streams] ist kein Stream eingetragen.")
+        raise ValueError("No stream is configured in [streams].")
     unknown_streams = set(stream_overrides_data) - set(streams)
     if unknown_streams:
         names = ", ".join(sorted(str(name) for name in unknown_streams))
         raise ValueError(
-            "Zeitüberschreibung verweist auf unbekannte Streams: " + names
+            "Timing override refers to unknown streams: " + names
         )
 
     token = os.environ.get("WATCHFROG_TELEGRAM_BOT_TOKEN") or _clean_secret(
@@ -293,7 +293,7 @@ def load_config(path: Path) -> AppConfig:
     chat_id = chat_id.strip()
     healthchecks_url = healthchecks_url.strip()
     if healthchecks_url:
-        validate_http_url(healthchecks_url, "Healthchecks.io-Ping-URL")
+        validate_http_url(healthchecks_url, "Healthchecks.io ping URL")
 
     return AppConfig(
         monitor=MonitorConfig(
@@ -319,12 +319,12 @@ def resolve_ffmpeg(configured_path: str) -> str:
         candidate = Path(expanded)
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return str(candidate)
-        raise ValueError(f"ffmpeg ist nicht ausführbar: {configured_path}")
+        raise ValueError(f"ffmpeg is not executable: {configured_path}")
     found = shutil.which(expanded)
     if not found:
         raise ValueError(
-            "ffmpeg wurde nicht gefunden. Bitte ffmpeg installieren und dem "
-            "Systempfad PATH hinzufügen oder ffmpeg_path konfigurieren."
+            "ffmpeg was not found. Please install ffmpeg and add it to PATH "
+            "or configure ffmpeg_path."
         )
     return found
 
@@ -352,7 +352,7 @@ def resolve_playlist(url: str, timeout: float) -> str:
         candidate = urllib.parse.urljoin(final_url, line)
         if urllib.parse.urlparse(candidate).scheme in {"http", "https"}:
             return candidate
-    raise RuntimeError(f"Playlist enthält keine Stream-Adresse: {url}")
+    raise RuntimeError(f"Playlist contains no stream URL: {url}")
 
 
 def telegram_api(
@@ -378,14 +378,14 @@ def telegram_api(
         detail = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"Telegram HTTP {exc.code}: {detail}") from exc
     except (urllib.error.URLError, TimeoutError) as exc:
-        raise RuntimeError(f"Telegram ist nicht erreichbar: {exc}") from exc
+        raise RuntimeError(f"Telegram is unreachable: {exc}") from exc
     if not payload.get("ok"):
-        raise RuntimeError(f"Telegram-Fehler: {payload}")
+        raise RuntimeError(f"Telegram error: {payload}")
     return payload
 
 
 def send_healthcheck_ping(url: str, *, timeout: float = 10.0) -> None:
-    validate_http_url(url, "Healthchecks.io-Ping-URL")
+    validate_http_url(url, "Healthchecks.io ping URL")
     request = urllib.request.Request(
         url,
         method="GET",
@@ -397,11 +397,11 @@ def send_healthcheck_ping(url: str, *, timeout: float = 10.0) -> None:
         ) as response:
             response.read(1024)
             if response.status != 200:
-                raise RuntimeError(f"HTTP-Status {response.status}")
+                raise RuntimeError(f"HTTP status {response.status}")
     except urllib.error.HTTPError as exc:
         raise RuntimeError(f"Healthchecks.io HTTP {exc.code}") from exc
     except (urllib.error.URLError, TimeoutError) as exc:
-        raise RuntimeError(f"Healthchecks.io ist nicht erreichbar: {exc}") from exc
+        raise RuntimeError(f"Healthchecks.io is unreachable: {exc}") from exc
 
 
 class Notifier:
@@ -420,7 +420,7 @@ class Notifier:
 
     def enqueue(self, message: str) -> None:
         if not self.active:
-            LOGGER.warning("Benachrichtigung (Telegram inaktiv):\n%s", message)
+            LOGGER.warning("Notification (Telegram inactive):\n%s", message)
             return
         self.queue.put_nowait(message)
 
@@ -443,11 +443,11 @@ class Notifier:
                             "disable_web_page_preview": "true",
                         },
                     )
-                    LOGGER.info("Telegram-Nachricht gesendet.")
+                    LOGGER.info("Telegram message sent.")
                     break
                 except Exception as exc:  # network errors must not stop monitoring
                     LOGGER.error(
-                        "Telegram-Versuch %d/5 fehlgeschlagen: %s", attempt, exc
+                        "Telegram attempt %d/5 failed: %s", attempt, exc
                     )
                     if attempt < 5:
                         await asyncio.sleep(delay)
@@ -460,7 +460,7 @@ class Notifier:
         try:
             await asyncio.wait_for(self.queue.join(), timeout=10.0)
         except asyncio.TimeoutError:
-            LOGGER.warning("Telegram-Warteschlange beim Beenden nicht leer.")
+            LOGGER.warning("Telegram queue was not empty during shutdown.")
         self.queue.put_nowait(None)
         await self.task
 
@@ -506,17 +506,17 @@ class StreamState:
 
         self.outage_started_wall = self.silence_started_wall
         message = (
-            "🔴 WatchFrog – Audioausfall\n"
+            "🔴 WatchFrog – Audio silence detected\n"
             f"Stream: {self.name}\n"
-            f"Beginn: {format_timestamp(self.outage_started_wall)}\n"
-            f"Erkannt: {format_timestamp(now_wall)}\n"
-            f"Dauer unter Pegelgrenze: mindestens "
-            f"{format_decimal(self.stream.silence_seconds)} Sekunden\n"
-            f"Grund: Stream wird empfangen, Audiosignal liegt unter "
+            f"Started: {format_timestamp(self.outage_started_wall)}\n"
+            f"Detected: {format_timestamp(now_wall)}\n"
+            f"Duration below threshold: at least "
+            f"{format_decimal(self.stream.silence_seconds)} seconds\n"
+            f"Reason: The stream is being received, but the audio level is below "
             f"{self.config.silence_threshold_db:g} dBFS"
         )
         LOGGER.error(
-            "%s: empfangene Stille unter %g dBFS",
+            "%s: received silence below %g dBFS",
             self.name,
             self.config.silence_threshold_db,
         )
@@ -539,12 +539,12 @@ class StreamState:
             0.0, (now_wall - self.outage_started_wall).total_seconds()
         )
         message = (
-            "🟢 WatchFrog – Audio wieder da\n"
+            "🟢 WatchFrog – Audio recovered\n"
             f"Stream: {self.name}\n"
-            f"Wiederhergestellt: {format_timestamp(now_wall)}\n"
-            f"Ausfalldauer: {format_duration(outage_duration)}"
+            f"Recovered: {format_timestamp(now_wall)}\n"
+            f"Outage duration: {format_duration(outage_duration)}"
         )
-        LOGGER.info("%s: Audio wiederhergestellt nach %.1f s", self.name, outage_duration)
+        LOGGER.info("%s: audio recovered after %.1f s", self.name, outage_duration)
         if self.config.notify_recovery:
             self.notifier.enqueue(message)
         self.outage_started_wall = None
@@ -559,13 +559,12 @@ class StreamState:
 
 
 def format_decimal(value: float) -> str:
-    text = f"{value:.1f}"
-    return text.replace(".", ",")
+    return f"{value:.1f}"
 
 
 def format_timestamp(value: datetime) -> str:
     zone = value.tzname() or ""
-    return f"{value:%d.%m.%Y, %H:%M:%S} {zone}".strip()
+    return f"{value:%Y-%m-%d %H:%M:%S} {zone}".strip()
 
 
 def format_duration(seconds: float) -> str:
@@ -626,7 +625,7 @@ async def decode_stream_once(
         asyncio.to_thread(resolve_playlist, stream.url, resolve_timeout),
         timeout=resolve_timeout + 0.5,
     )
-    LOGGER.info("%s: Playlist aufgelöst", stream.name)
+    LOGGER.info("%s: playlist resolved", stream.name)
 
     arguments = [
         ffmpeg_path,
@@ -680,8 +679,8 @@ async def decode_stream_once(
                 state.reset_silence_candidate()
                 if time.monotonic() - last_output_mono >= stall_restart_seconds:
                     raise RuntimeError(
-                        f"ffmpeg liefert seit {stall_restart_seconds:g} s "
-                        "keine Audiodaten"
+                        f"ffmpeg has produced no audio data for "
+                        f"{stall_restart_seconds:g} s"
                     )
                 continue
             if not data:
@@ -699,7 +698,7 @@ async def decode_stream_once(
                     state.observe_silence(CHUNK_SECONDS)
         if not stop_event.is_set():
             return_code = await process.wait()
-            raise RuntimeError(f"ffmpeg wurde beendet (Code {return_code})")
+            raise RuntimeError(f"ffmpeg exited with code {return_code}")
     finally:
         await terminate_process(process)
         await stderr_task
@@ -729,7 +728,7 @@ async def monitor_stream(
         except Exception as exc:
             state.reset_silence_candidate()
             LOGGER.warning(
-                "%s: Empfangsfehler (kein Telegram-Alarm): %s",
+                "%s: reception error (no Telegram alert): %s",
                 stream.name,
                 exc,
             )
@@ -755,13 +754,13 @@ async def healthcheck_loop(
         if all(not task.done() for task in monitor_tasks):
             try:
                 await asyncio.to_thread(send_healthcheck_ping, config.ping_url)
-                LOGGER.debug("Healthchecks.io-Heartbeat gesendet.")
+                LOGGER.debug("Healthchecks.io heartbeat sent.")
             except Exception as exc:
-                LOGGER.warning("Healthchecks.io-Heartbeat fehlgeschlagen: %s", exc)
+                LOGGER.warning("Healthchecks.io heartbeat failed: %s", exc)
         else:
             LOGGER.error(
-                "Healthchecks.io-Heartbeat ausgesetzt: "
-                "Mindestens eine Stream-Überwachung läuft nicht mehr."
+                "Healthchecks.io heartbeat suspended: "
+                "at least one stream monitor is no longer running."
             )
         try:
             await asyncio.wait_for(
@@ -790,12 +789,12 @@ async def run_monitor(
     notifier.start()
     if not notifier.active:
         LOGGER.warning(
-            "Telegram ist nicht konfiguriert oder wurde deaktiviert; "
-            "Alarme erscheinen nur im Log."
+            "Telegram is not configured or has been disabled; "
+            "alerts will only appear in the log."
         )
 
     LOGGER.info(
-        "%s startet: %d Streams, Standard %.1f s / %.1f dBFS, ffmpeg %s",
+        "%s starting: %d streams, default %.1f s / %.1f dBFS, ffmpeg %s",
         APP_NAME,
         len(config.streams),
         config.monitor.silence_seconds,
@@ -810,8 +809,8 @@ async def run_monitor(
             != config.monitor.reconnect_delay_seconds
         ):
             LOGGER.info(
-                "%s: individuelle Zeiten Alarm %.1f s, Entwarnung %.1f s, "
-                "Wiederverbindung %.1f s",
+                "%s: custom timings alert %.1f s, recovery %.1f s, "
+                "reconnect %.1f s",
                 stream.name,
                 stream.silence_seconds,
                 stream.recovery_seconds,
@@ -819,12 +818,12 @@ async def run_monitor(
             )
     if config.monitor.startup_message:
         notifier.enqueue(
-            "✅ WatchFrog gestartet\n"
-            f"Überwachte Streams: {len(config.streams)}\n"
-            "Standard-Alarmgrenze: "
-            f"{format_decimal(config.monitor.silence_seconds)} Sekunden "
-            "empfangene Stille\n"
-            f"Zeit: {format_timestamp(datetime.now(config.monitor.timezone))}"
+            "✅ WatchFrog started\n"
+            f"Monitored streams: {len(config.streams)}\n"
+            "Default alert threshold: "
+            f"{format_decimal(config.monitor.silence_seconds)} seconds "
+            "of received silence\n"
+            f"Time: {format_timestamp(datetime.now(config.monitor.timezone))}"
         )
 
     tasks = [
@@ -846,9 +845,9 @@ async def run_monitor(
             healthcheck_loop(config.healthchecks, tasks, stop_event),
             name="healthchecks-heartbeat",
         )
-        LOGGER.info("Healthchecks.io-Heartbeat ist aktiv (alle 60 Sekunden).")
+        LOGGER.info("Healthchecks.io heartbeat is active (every 60 seconds).")
     else:
-        LOGGER.info("Healthchecks.io-Heartbeat ist nicht konfiguriert.")
+        LOGGER.info("Healthchecks.io heartbeat is not configured.")
 
     timer: asyncio.Task[None] | None = None
     if run_seconds is not None:
@@ -859,7 +858,7 @@ async def run_monitor(
         timer = asyncio.create_task(stop_later(), name="test-timer")
 
     await stop_event.wait()
-    LOGGER.info("%s wird beendet.", APP_NAME)
+    LOGGER.info("%s shutting down.", APP_NAME)
     for task in tasks:
         task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
@@ -897,8 +896,8 @@ def setup_logging(log_file: Path | None, verbose: bool) -> None:
 
 def choose_chat(token: str) -> str:
     input(
-        "\nBitte jetzt in Telegram dem neuen Bot eine beliebige Nachricht senden.\n"
-        "Danach hier die Eingabetaste drücken … "
+        "\nPlease send any message to the new bot in Telegram now.\n"
+        "Then press Enter here … "
     )
     payload = telegram_api(token, "getUpdates", {"timeout": "0"})
     chats: dict[str, str] = {}
@@ -927,65 +926,65 @@ def choose_chat(token: str) -> str:
         chats[chat_id] = str(label)
     if not chats:
         raise RuntimeError(
-            "Keine Nachricht gefunden. Bitte dem Bot zuerst in Telegram schreiben "
-            "und die Einrichtung erneut starten."
+            "No message found. Please send a message to the bot in Telegram "
+            "and restart the setup."
         )
     if len(chats) == 1:
         chat_id, label = next(iter(chats.items()))
-        print(f"Telegram-Chat gefunden: {label}")
+        print(f"Telegram chat found: {label}")
         return chat_id
 
-    print("\nGefundene Telegram-Chats:")
+    print("\nTelegram chats found:")
     choices = list(chats.items())
     for index, (_, label) in enumerate(choices, start=1):
         print(f"  {index}. {label}")
     while True:
-        answer = input("Nummer des gewünschten Chats: ").strip()
+        answer = input("Number of the desired chat: ").strip()
         if answer.isdigit() and 1 <= int(answer) <= len(choices):
             return choices[int(answer) - 1][0]
-        print("Bitte eine gültige Nummer eingeben.")
+        print("Please enter a valid number.")
 
 
 def choose_streams() -> dict[str, str]:
-    print("\nAudio-Stream-Einrichtung")
-    print("Bitte mindestens einen Namen und die zugehörige Stream-URL eingeben.")
+    print("\nAudio stream setup")
+    print("Please enter at least one name and its stream URL.")
     streams: dict[str, str] = {}
     while True:
-        name = input("Stream-Name: ").strip()
+        name = input("Stream name: ").strip()
         if not name:
-            print("Bitte einen Stream-Namen eingeben.")
+            print("Please enter a stream name.")
             continue
-        url = input("Stream-URL: ").strip()
+        url = input("Stream URL: ").strip()
         try:
-            validate_http_url(url, "Stream-URL")
+            validate_http_url(url, "Stream URL")
         except ValueError as exc:
             print(exc)
             continue
         streams[name] = url
-        answer = input("Weiteren Stream hinzufügen? [j/N] ").strip().lower()
-        if answer not in {"j", "ja"}:
+        answer = input("Add another stream? [y/N] ").strip().lower()
+        if answer not in {"y", "yes"}:
             return streams
 
 
 def configure_interactively(config_path: Path) -> None:
     example_config = find_example_config()
-    print("\nTelegram-Einrichtung für WatchFrog")
-    print("Den Bot-Token erhältst du in Telegram beim Bot @BotFather.")
-    token = getpass.getpass("Bot-Token (Eingabe bleibt unsichtbar): ").strip()
+    print("\nTelegram setup for WatchFrog")
+    print("You can obtain the bot token from @BotFather in Telegram.")
+    token = getpass.getpass("Bot token (input is hidden): ").strip()
     if not token:
-        raise RuntimeError("Es wurde kein Bot-Token eingegeben.")
+        raise RuntimeError("No bot token was entered.")
     bot_info = telegram_api(token, "getMe")
-    username = bot_info.get("result", {}).get("username", "Telegram-Bot")
-    print(f"Bot bestätigt: @{username}")
+    username = bot_info.get("result", {}).get("username", "Telegram bot")
+    print(f"Bot confirmed: @{username}")
     chat_id = choose_chat(token)
     healthchecks_url = input(
-        "\nHealthchecks.io-Ping-URL "
-        "(optional, leer lassen zum Überspringen): "
+        "\nHealthchecks.io ping URL "
+        "(optional, leave empty to skip): "
     ).strip()
     if healthchecks_url:
-        validate_http_url(healthchecks_url, "Healthchecks.io-Ping-URL")
+        validate_http_url(healthchecks_url, "Healthchecks.io ping URL")
         send_healthcheck_ping(healthchecks_url)
-        print("Healthchecks.io-Testping war erfolgreich.")
+        print("Healthchecks.io test ping succeeded.")
     streams = choose_streams()
     stream_lines = "\n".join(
         f"{json.dumps(name, ensure_ascii=False)} = {json.dumps(url)}"
@@ -1006,7 +1005,7 @@ def configure_interactively(config_path: Path) -> None:
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(configured, encoding="utf-8")
     config_path.chmod(0o600)
-    print(f"Konfiguration gespeichert: {config_path}")
+    print(f"Configuration saved: {config_path}")
 
 
 def set_healthcheck_url(config_path: Path, ping_url: str) -> None:
@@ -1050,31 +1049,31 @@ def configure_healthcheck_interactively(config_path: Path) -> None:
     config = load_config(config_path)
     if config.healthchecks.enabled:
         prompt = (
-            "\nHealthchecks.io ist bereits konfiguriert.\n"
-            "Neue Ping-URL (leer = unverändert, - = entfernen): "
+            "\nHealthchecks.io is already configured.\n"
+            "New ping URL (empty = unchanged, - = remove): "
         )
     else:
         prompt = (
-            "\nHealthchecks.io-Ping-URL "
-            "(optional, leer lassen zum Überspringen): "
+            "\nHealthchecks.io ping URL "
+            "(optional, leave empty to skip): "
         )
     answer = input(prompt).strip()
     if not answer:
-        print("Healthchecks.io-Einstellung bleibt unverändert.")
+        print("Healthchecks.io setting remains unchanged.")
         return
     if answer == "-":
         set_healthcheck_url(config_path, "")
-        print("Healthchecks.io-Heartbeat wurde deaktiviert.")
+        print("Healthchecks.io heartbeat has been disabled.")
         return
-    validate_http_url(answer, "Healthchecks.io-Ping-URL")
+    validate_http_url(answer, "Healthchecks.io ping URL")
     send_healthcheck_ping(answer)
     set_healthcheck_url(config_path, answer)
-    print("Healthchecks.io-Testping erfolgreich; URL wurde gespeichert.")
+    print("Healthchecks.io test ping succeeded; URL was saved.")
 
 
 def test_telegram(config: AppConfig) -> None:
     if not config.telegram.enabled:
-        raise RuntimeError("Telegram ist noch nicht vollständig konfiguriert.")
+        raise RuntimeError("Telegram is not fully configured yet.")
     now = datetime.now(config.monitor.timezone)
     telegram_api(
         config.telegram.bot_token,
@@ -1082,20 +1081,20 @@ def test_telegram(config: AppConfig) -> None:
         {
             "chat_id": config.telegram.chat_id,
             "text": (
-                "✅ WatchFrog: Telegram-Test erfolgreich\n"
-                f"Zeit: {format_timestamp(now)}"
+                "✅ WatchFrog: Telegram test succeeded\n"
+                f"Time: {format_timestamp(now)}"
             ),
         },
     )
-    print("Telegram-Testnachricht wurde gesendet.")
+    print("Telegram test message sent.")
 
 
 def test_healthcheck(config: AppConfig) -> None:
     if not config.healthchecks.enabled:
-        print("Healthchecks.io ist nicht konfiguriert; Test übersprungen.")
+        print("Healthchecks.io is not configured; test skipped.")
         return
     send_healthcheck_ping(config.healthchecks.ping_url)
-    print("Healthchecks.io-Testping war erfolgreich.")
+    print("Healthchecks.io test ping succeeded.")
 
 
 def parse_args() -> argparse.Namespace:
@@ -1104,42 +1103,42 @@ def parse_args() -> argparse.Namespace:
         "--config",
         type=Path,
         default=default_config_path(),
-        help="Pfad zur TOML-Konfiguration",
+        help="path to the TOML configuration",
     )
     parser.add_argument(
         "--configure",
         action="store_true",
-        help="Telegram und Healthchecks.io interaktiv einrichten",
+        help="configure Telegram and Healthchecks.io interactively",
     )
     parser.add_argument(
         "--configure-healthcheck",
         action="store_true",
-        help="Healthchecks.io-Ping-URL interaktiv einrichten",
+        help="configure the Healthchecks.io ping URL interactively",
     )
     parser.add_argument(
         "--test-telegram",
         action="store_true",
-        help="eine Telegram-Testnachricht senden",
+        help="send a Telegram test message",
     )
     parser.add_argument(
         "--test-healthcheck",
         action="store_true",
-        help="einen Healthchecks.io-Testping senden",
+        help="send a Healthchecks.io test ping",
     )
     parser.add_argument(
         "--check",
         action="store_true",
-        help="Konfiguration und ffmpeg prüfen",
+        help="check the configuration and ffmpeg",
     )
     parser.add_argument(
         "--run-seconds",
         type=float,
-        help="nur für einen zeitlich begrenzten Funktionstest",
+        help="run for a limited time for functional testing",
     )
     parser.add_argument(
         "--no-notifications",
         action="store_true",
-        help="Telegram beim Funktionstest deaktivieren",
+        help="disable Telegram during functional testing",
     )
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args()
@@ -1162,15 +1161,15 @@ def main() -> int:
         ffmpeg_path = resolve_ffmpeg(config.monitor.ffmpeg_path)
         if args.check:
             telegram_status = (
-                "konfiguriert" if config.telegram.enabled else "nicht konfiguriert"
+                "configured" if config.telegram.enabled else "not configured"
             )
             healthchecks_status = (
-                "konfiguriert"
+                "configured"
                 if config.healthchecks.enabled
-                else "nicht konfiguriert"
+                else "not configured"
             )
             print(
-                f"Konfiguration gültig: {len(config.streams)} Streams, "
+                f"Configuration valid: {len(config.streams)} streams, "
                 f"ffmpeg={ffmpeg_path}, Telegram={telegram_status}, "
                 f"Healthchecks.io={healthchecks_status}"
             )
@@ -1182,7 +1181,7 @@ def main() -> int:
             test_healthcheck(config)
             return 0
         if args.run_seconds is not None and args.run_seconds <= 0:
-            raise ValueError("--run-seconds muss größer als 0 sein.")
+            raise ValueError("--run-seconds must be greater than 0.")
         asyncio.run(
             run_monitor(
                 config,

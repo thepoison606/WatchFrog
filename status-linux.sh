@@ -6,23 +6,23 @@ LOG_FILE="$CONFIG_ROOT/logs/watchfrog.log"
 SERVICE_NAME="watchfrog.service"
 
 echo
-echo "WatchFrog – Linux-Status"
+echo "WatchFrog – Linux status"
 echo "========================"
 echo
 
 if systemctl --user is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
-  echo "Status: läuft im Hintergrund"
+  echo "Status: running in the background"
 else
-  echo "Status: nicht gestartet"
-  echo "Bitte setup-linux.sh ausführen."
+  echo "Status: not running"
+  echo "Please run setup-linux.sh."
 fi
 
 echo
 if [[ -f "$LOG_FILE" ]]; then
-  echo "Letzte Meldungen:"
+  echo "Latest messages:"
   echo
   tail -n 25 "$LOG_FILE"
 else
-  echo "Es gibt noch keine Logdatei unter:"
+  echo "No log file exists yet at:"
   echo "$LOG_FILE"
 fi

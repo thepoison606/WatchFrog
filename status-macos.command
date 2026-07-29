@@ -6,25 +6,25 @@ LABEL="de.watchfrog"
 LOG_FILE="$SCRIPT_DIR/logs/watchfrog.log"
 
 echo
-echo "WatchFrog – macOS-Status"
+echo "WatchFrog – macOS status"
 echo "========================"
 echo
 
 if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
-  echo "Status: läuft im Hintergrund"
+  echo "Status: running in the background"
 else
-  echo "Status: nicht gestartet"
-  echo "Bitte setup-macos.command ausführen."
+  echo "Status: not running"
+  echo "Please run setup-macos.command."
 fi
 
 echo
 if [[ -f "$LOG_FILE" ]]; then
-  echo "Letzte Meldungen:"
+  echo "Latest messages:"
   echo
   tail -n 25 "$LOG_FILE"
 else
-  echo "Es gibt noch keine Logdatei."
+  echo "No log file exists yet."
 fi
 
 echo
-read "?Zum Schließen Eingabetaste drücken …"
+read "?Press Enter to close …"

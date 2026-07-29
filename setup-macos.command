@@ -15,17 +15,17 @@ SERVICE_TARGET="$DOMAIN_TARGET/$LABEL"
 cd "$SCRIPT_DIR"
 
 echo
-echo "$APP_NAME – macOS-Einrichtung"
-echo "==============================="
+echo "$APP_NAME – macOS setup"
+echo "======================"
 echo
 
 PYTHON_BIN="$(command -v python3 || true)"
 if [[ -z "$PYTHON_BIN" ]] ||
    ! "$PYTHON_BIN" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))'; then
-  echo "Benötigt wird Python 3.11 oder neuer."
-  echo "Installation mit Homebrew: brew install python"
+  echo "Python 3.11 or newer is required."
+  echo "Install it with Homebrew: brew install python"
   echo
-  read "?Zum Beenden Eingabetaste drücken …"
+  read "?Press Enter to exit …"
   exit 1
 fi
 
@@ -33,20 +33,20 @@ FFMPEG_BIN="$(command -v ffmpeg || true)"
 if [[ -z "$FFMPEG_BIN" ]]; then
   BREW_BIN="$(command -v brew || true)"
   if [[ -z "$BREW_BIN" ]]; then
-    echo "ffmpeg wurde nicht gefunden."
-    echo "Installation nach Homebrew: brew install ffmpeg"
-    read "?Zum Beenden Eingabetaste drücken …"
+    echo "ffmpeg was not found."
+    echo "Install it with Homebrew: brew install ffmpeg"
+    read "?Press Enter to exit …"
     exit 1
   fi
-  echo "ffmpeg wird jetzt mit Homebrew installiert."
+  echo "Installing ffmpeg with Homebrew."
   "$BREW_BIN" install ffmpeg
   FFMPEG_BIN="$(command -v ffmpeg)"
 fi
 
 if [[ -f "$CONFIG_FILE" ]]; then
-  echo "Eine bestehende WatchFrog-Konfiguration wurde gefunden."
-  read "ANSWER?Telegram-Zugang neu einrichten? [j/N] "
-  if [[ "${ANSWER:l}" == "j" || "${ANSWER:l}" == "ja" ]]; then
+  echo "An existing WatchFrog configuration was found."
+  read "ANSWER?Reconfigure Telegram access? [y/N] "
+  if [[ "${ANSWER:l}" == "y" || "${ANSWER:l}" == "yes" ]]; then
     "$PYTHON_BIN" "$MONITOR_SCRIPT" --configure --config "$CONFIG_FILE"
   else
     "$PYTHON_BIN" "$MONITOR_SCRIPT" --configure-healthcheck --config "$CONFIG_FILE"
@@ -90,17 +90,17 @@ PY
 
 launchctl enable "$SERVICE_TARGET" >/dev/null 2>&1 || true
 if launchctl print "$SERVICE_TARGET" >/dev/null 2>&1; then
-  echo "Vorhandener WatchFrog-Dienst wird neu gestartet."
+  echo "Restarting the existing WatchFrog service."
 else
-  echo "WatchFrog wird erstmals bei macOS registriert."
+  echo "Registering WatchFrog with macOS for the first time."
   if ! BOOTSTRAP_OUTPUT="$(launchctl bootstrap "$DOMAIN_TARGET" "$PLIST_FILE" 2>&1)"; then
     if ! launchctl print "$SERVICE_TARGET" >/dev/null 2>&1; then
       echo
-      echo "macOS konnte WatchFrog nicht registrieren:"
+      echo "macOS could not register WatchFrog:"
       echo "$BOOTSTRAP_OUTPUT"
       plutil -lint "$PLIST_FILE" || true
-      echo "Bitte den Mac neu starten und setup-macos.command erneut ausführen."
-      read "?Zum Beenden Eingabetaste drücken …"
+      echo "Please restart the Mac and run setup-macos.command again."
+      read "?Press Enter to exit …"
       exit 1
     fi
   fi
@@ -109,7 +109,7 @@ fi
 launchctl kickstart -k "$SERVICE_TARGET"
 
 echo
-echo "Fertig: WatchFrog läuft jetzt automatisch im Hintergrund."
-echo "Logdatei: $SCRIPT_DIR/logs/watchfrog.log"
+echo "Done: WatchFrog now runs automatically in the background."
+echo "Log file: $SCRIPT_DIR/logs/watchfrog.log"
 echo
-read "?Zum Schließen Eingabetaste drücken …"
+read "?Press Enter to close …"

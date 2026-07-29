@@ -52,7 +52,7 @@ grep -Fx -- "--user daemon-reload" "$SYSTEMCTL_LOG"
 grep -Fx -- "--user enable --now watchfrog.service" "$SYSTEMCTL_LOG"
 
 STATUS_OUTPUT="$(bash "$PROJECT_ROOT/status-linux.sh")"
-grep -F "Status: läuft im Hintergrund" <<<"$STATUS_OUTPUT"
+grep -F "Status: running in the background" <<<"$STATUS_OUTPUT"
 
 bash "$PROJECT_ROOT/uninstall-linux.sh"
 

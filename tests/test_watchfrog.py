@@ -101,11 +101,14 @@ class StreamStateTests(unittest.TestCase):
             state.observe_silence(0.1)
         self.assertEqual(notifier.messages, [])
         state.observe_silence(0.1)
-        self.assertIn("WatchFrog – Audioausfall", notifier.messages[0])
+        self.assertIn("WatchFrog – Audio silence detected", notifier.messages[0])
+        self.assertIn("Duration below threshold:", notifier.messages[0])
+        self.assertIn("Reason:", notifier.messages[0])
 
         for _ in range(5):
             state.observe_sound(0.1)
-        self.assertIn("WatchFrog – Audio wieder da", notifier.messages[1])
+        self.assertIn("WatchFrog – Audio recovered", notifier.messages[1])
+        self.assertIn("Outage duration:", notifier.messages[1])
 
     def test_reception_gap_resets_partial_silence(self):
         notifier = FakeNotifier()
@@ -167,11 +170,11 @@ class ConfigTests(unittest.TestCase):
     def test_unknown_override_is_rejected(self):
         source = Path(__file__).parents[1] / "config.example.toml"
         text = source.read_text(encoding="utf-8")
-        text += '\n[stream_overrides."Unbekannt"]\nsilence_seconds = 8.0\n'
+        text += '\n[stream_overrides."Unknown"]\nsilence_seconds = 8.0\n'
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"
             path.write_text(text, encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "unbekannte Streams"):
+            with self.assertRaisesRegex(ValueError, "unknown streams"):
                 watchfrog.load_config(path)
 
     def test_default_path_uses_watchfrog_name(self):
