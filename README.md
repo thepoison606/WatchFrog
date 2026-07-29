@@ -145,6 +145,6 @@ python watchfrog.py --test-healthcheck
 
 ## Releases
 
-Pushing a tag that starts with `v`, for example `v2.0.0`, runs the GitHub Actions
-release workflow. It executes the test suite, builds a versioned portable ZIP
-archive, and publishes a GitHub release with automatically generated notes.
+Pushing a version tag, for example `0.1.0`, runs the GitHub Actions release
+workflow. It executes the test suite, builds a versioned portable ZIP archive,
+and publishes a GitHub release with automatically generated notes.
