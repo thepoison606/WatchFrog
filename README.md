@@ -126,6 +126,11 @@ periods are not combined. A reception-outage notification is sent only once per
 outage. When decodable audio returns, WatchFrog sends a separate recovery
 notification if `notify_recovery` is enabled.
 
+Telegram messages remain queued during network failures, API errors, or rate
+limits. WatchFrog retries with a capped backoff, paces consecutive messages,
+and preserves message order, so an outage detection is delivered before its
+recovery notification.
+
 ## Healthchecks.io
 
 When `[healthchecks] ping_url` is set, WatchFrog sends a heartbeat immediately at

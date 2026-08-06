@@ -29,6 +29,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 APP_NAME = "WatchFrog"
 CHUNK_SECONDS = 0.1
+TELEGRAM_SEND_INTERVAL_SECONDS = 1.0
 LOGGER = logging.getLogger("watchfrog")
 
 
@@ -447,32 +448,41 @@ class Notifier:
     async def _worker(self) -> None:
         while True:
             message = await self.queue.get()
-            if message is None:
-                self.queue.task_done()
-                return
-            delay = 1.0
-            for attempt in range(1, 6):
-                try:
-                    await asyncio.to_thread(
-                        telegram_api,
-                        self.telegram.bot_token,
-                        "sendMessage",
-                        {
-                            "chat_id": self.telegram.chat_id,
-                            "text": message,
-                            "disable_web_page_preview": "true",
-                        },
-                    )
-                    LOGGER.info("Telegram message sent.")
-                    break
-                except Exception as exc:  # network errors must not stop monitoring
-                    LOGGER.error(
-                        "Telegram attempt %d/5 failed: %s", attempt, exc
-                    )
-                    if attempt < 5:
+            try:
+                if message is None:
+                    return
+                delay = 1.0
+                attempt = 0
+                summary = message.splitlines()[0]
+                while True:
+                    attempt += 1
+                    try:
+                        await asyncio.to_thread(
+                            telegram_api,
+                            self.telegram.bot_token,
+                            "sendMessage",
+                            {
+                                "chat_id": self.telegram.chat_id,
+                                "text": message,
+                                "disable_web_page_preview": "true",
+                            },
+                        )
+                        LOGGER.info("Telegram message sent: %s", summary)
+                        await asyncio.sleep(TELEGRAM_SEND_INTERVAL_SECONDS)
+                        break
+                    except Exception as exc:  # keep alerts until delivery succeeds
+                        LOGGER.error(
+                            "Telegram delivery attempt %d failed for %s; "
+                            "retrying in %.0f s: %s",
+                            attempt,
+                            summary,
+                            delay,
+                            exc,
+                        )
                         await asyncio.sleep(delay)
-                        delay *= 2
-            self.queue.task_done()
+                        delay = min(delay * 2, 60.0)
+            finally:
+                self.queue.task_done()
 
     async def stop(self) -> None:
         if self.task is None:
@@ -480,9 +490,17 @@ class Notifier:
         try:
             await asyncio.wait_for(self.queue.join(), timeout=10.0)
         except asyncio.TimeoutError:
-            LOGGER.warning("Telegram queue was not empty during shutdown.")
+            LOGGER.warning(
+                "Telegram queue was not empty during shutdown; "
+                "canceling pending deliveries."
+            )
+            self.task.cancel()
+            await asyncio.gather(self.task, return_exceptions=True)
+            self.task = None
+            return
         self.queue.put_nowait(None)
         await self.task
+        self.task = None
 
 
 class StreamState:

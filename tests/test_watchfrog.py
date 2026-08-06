@@ -1,9 +1,10 @@
+import asyncio
 import math
 import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
 import watchfrog
@@ -84,6 +85,36 @@ class HealthcheckTests(unittest.TestCase):
     def test_invalid_healthcheck_url_is_rejected(self):
         with self.assertRaises(ValueError):
             watchfrog.send_healthcheck_ping("not-a-url")
+
+
+class NotifierTests(unittest.IsolatedAsyncioTestCase):
+    async def test_messages_retry_until_delivered_in_order(self):
+        attempts = []
+        delivered = []
+
+        def fake_telegram_api(_token, _method, parameters):
+            message = parameters["text"]
+            attempts.append(message)
+            if message == "detection" and attempts.count(message) <= 6:
+                raise RuntimeError("Telegram is unreachable")
+            delivered.append(message)
+            return {"ok": True}
+
+        notifier = watchfrog.Notifier(
+            watchfrog.TelegramConfig("token", "chat")
+        )
+        with (
+            patch("watchfrog.telegram_api", side_effect=fake_telegram_api),
+            patch("watchfrog.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            notifier.start()
+            notifier.enqueue("detection")
+            notifier.enqueue("recovery")
+            await asyncio.wait_for(notifier.queue.join(), timeout=1.0)
+            await notifier.stop()
+
+        self.assertEqual(attempts.count("detection"), 7)
+        self.assertEqual(delivered, ["detection", "recovery"])
 
 
 class StreamStateTests(unittest.TestCase):
