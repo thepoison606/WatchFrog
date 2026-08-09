@@ -126,6 +126,41 @@ periods are not combined. A reception-outage notification is sent only once per
 outage. When decodable audio returns, WatchFrog sends a separate recovery
 notification if `notify_recovery` is enabled.
 
+### Scheduled silence thresholds
+
+Each stream can define weekly time slots with a different silence duration.
+Outside these slots, the stream's regular `silence_seconds` value remains in
+effect:
+
+```toml
+[stream_overrides."Main Stream"]
+silence_seconds = 5.0
+
+[[stream_overrides."Main Stream".silence_slots]]
+days = ["mon", "tue", "wed", "thu", "fri"]
+start = "06:00"
+end = "10:00"
+silence_seconds = 15.0
+
+[[stream_overrides."Main Stream".silence_slots]]
+days = ["sat", "sun"]
+start = "08:00"
+end = "12:00"
+silence_seconds = 30.0
+```
+
+- `days` accepts English weekday names such as `mon` or `monday`. If omitted,
+  the slot applies every day.
+- `start` is inclusive and `end` is exclusive, using the timezone configured in
+  `[monitor]`.
+- A slot can cross midnight, for example `22:00` to `06:00`. Its `days` refer to
+  the day on which the slot starts.
+- Identical `start` and `end` values cover the complete listed day.
+- Overlapping slots for the same stream are rejected during configuration
+  validation.
+- If the active slot changes during ongoing silence, its new threshold applies
+  immediately to the silence already accumulated.
+
 Telegram messages remain queued during network failures, API errors, or rate
 limits. WatchFrog retries with a capped backoff, paces consecutive messages,
 and preserves message order, so an outage detection is delivered before its

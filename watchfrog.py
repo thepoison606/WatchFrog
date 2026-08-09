@@ -31,6 +31,22 @@ APP_NAME = "WatchFrog"
 CHUNK_SECONDS = 0.1
 TELEGRAM_SEND_INTERVAL_SECONDS = 1.0
 LOGGER = logging.getLogger("watchfrog")
+DAY_NUMBERS = {
+    "mon": 0,
+    "monday": 0,
+    "tue": 1,
+    "tuesday": 1,
+    "wed": 2,
+    "wednesday": 2,
+    "thu": 3,
+    "thursday": 3,
+    "fri": 4,
+    "friday": 4,
+    "sat": 5,
+    "saturday": 5,
+    "sun": 6,
+    "sunday": 6,
+}
 
 
 def default_config_path() -> Path:
@@ -101,6 +117,30 @@ class MonitorConfig:
 
 
 @dataclass(frozen=True)
+class SilenceSlot:
+    days: frozenset[int]
+    start_minute: int
+    end_minute: int
+    silence_seconds: float
+
+    def matches(self, value: datetime) -> bool:
+        weekday = value.weekday()
+        minute = value.hour * 60 + value.minute
+        if self.start_minute == self.end_minute:
+            return weekday in self.days
+        if self.start_minute < self.end_minute:
+            return (
+                weekday in self.days
+                and self.start_minute <= minute < self.end_minute
+            )
+        return (
+            weekday in self.days and minute >= self.start_minute
+        ) or (
+            (weekday - 1) % 7 in self.days and minute < self.end_minute
+        )
+
+
+@dataclass(frozen=True)
 class StreamConfig:
     name: str
     url: str
@@ -108,6 +148,13 @@ class StreamConfig:
     reception_outage_seconds: float
     recovery_seconds: float
     reconnect_delay_seconds: float
+    silence_slots: tuple[SilenceSlot, ...] = ()
+
+    def silence_seconds_at(self, value: datetime) -> float:
+        for slot in self.silence_slots:
+            if slot.matches(value):
+                return slot.silence_seconds
+        return self.silence_seconds
 
 
 @dataclass(frozen=True)
@@ -156,6 +203,103 @@ def validate_http_url(url: str, label: str) -> None:
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError(f"{label} must be a complete HTTP or HTTPS URL.")
+
+
+def _parse_clock(value: Any, label: str) -> int:
+    text = str(value).strip()
+    parts = text.split(":")
+    if len(parts) != 2 or not all(part.isdigit() for part in parts):
+        raise ValueError(f"{label} must use HH:MM format.")
+    hour, minute = (int(part) for part in parts)
+    if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+        raise ValueError(f"{label} must be a valid time from 00:00 to 23:59.")
+    return hour * 60 + minute
+
+
+def _slot_week_minutes(slot: SilenceSlot) -> set[int]:
+    minutes: set[int] = set()
+    for day in slot.days:
+        day_start = day * 1440
+        if slot.start_minute == slot.end_minute:
+            minutes.update(range(day_start, day_start + 1440))
+        elif slot.start_minute < slot.end_minute:
+            minutes.update(
+                range(
+                    day_start + slot.start_minute,
+                    day_start + slot.end_minute,
+                )
+            )
+        else:
+            minutes.update(
+                range(day_start + slot.start_minute, day_start + 1440)
+            )
+            next_day_start = ((day + 1) % 7) * 1440
+            minutes.update(
+                range(next_day_start, next_day_start + slot.end_minute)
+            )
+    return minutes
+
+
+def _parse_silence_slots(value: Any, stream_name: str) -> tuple[SilenceSlot, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ValueError(f"{stream_name}: silence_slots must be an array of tables.")
+
+    slots: list[SilenceSlot] = []
+    occupied_minutes: set[int] = set()
+    for index, raw_slot in enumerate(value, start=1):
+        label = f"{stream_name}: silence_slots entry {index}"
+        if not isinstance(raw_slot, dict):
+            raise ValueError(f"{label} must be a table.")
+        unknown_keys = set(raw_slot) - {
+            "days",
+            "start",
+            "end",
+            "silence_seconds",
+        }
+        if unknown_keys:
+            unknown = ", ".join(sorted(str(key) for key in unknown_keys))
+            raise ValueError(f"{label} contains unknown settings: {unknown}")
+
+        raw_days = raw_slot.get("days", list(range(7)))
+        if not isinstance(raw_days, list) or not raw_days:
+            raise ValueError(f"{label}.days must be a non-empty array.")
+        days: set[int] = set()
+        for raw_day in raw_days:
+            if isinstance(raw_day, int) and raw_day in range(7):
+                days.add(raw_day)
+                continue
+            day_name = str(raw_day).strip().lower()
+            if day_name not in DAY_NUMBERS:
+                raise ValueError(
+                    f"{label}.days contains invalid weekday {raw_day!r}."
+                )
+            days.add(DAY_NUMBERS[day_name])
+
+        try:
+            start_minute = _parse_clock(raw_slot["start"], f"{label}.start")
+            end_minute = _parse_clock(raw_slot["end"], f"{label}.end")
+            slot_silence_seconds = float(raw_slot["silence_seconds"])
+        except KeyError as exc:
+            raise ValueError(f"{label} is missing {exc.args[0]!r}.") from exc
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid {label}: {exc}") from exc
+        if slot_silence_seconds <= 0:
+            raise ValueError(f"{label}.silence_seconds must be greater than 0.")
+
+        slot = SilenceSlot(
+            days=frozenset(days),
+            start_minute=start_minute,
+            end_minute=end_minute,
+            silence_seconds=slot_silence_seconds,
+        )
+        slot_minutes = _slot_week_minutes(slot)
+        if occupied_minutes & slot_minutes:
+            raise ValueError(f"{label} overlaps another silence slot.")
+        occupied_minutes.update(slot_minutes)
+        slots.append(slot)
+    return tuple(slots)
 
 
 def load_config(path: Path) -> AppConfig:
@@ -229,6 +373,7 @@ def load_config(path: Path) -> AppConfig:
             )
         unknown_keys = set(override) - {
             "silence_seconds",
+            "silence_slots",
             "reception_outage_seconds",
             "recovery_seconds",
             "reconnect_delay_seconds",
@@ -257,6 +402,10 @@ def load_config(path: Path) -> AppConfig:
                     reconnect_delay_seconds,
                 )
             )
+            stream_silence_slots = _parse_silence_slots(
+                override.get("silence_slots"),
+                clean_name,
+            )
         except (TypeError, ValueError) as exc:
             raise ValueError(
                 f"Invalid timing override for {clean_name!r}: {exc}"
@@ -284,6 +433,7 @@ def load_config(path: Path) -> AppConfig:
             reception_outage_seconds=stream_reception_outage_seconds,
             recovery_seconds=stream_recovery_seconds,
             reconnect_delay_seconds=stream_reconnect_delay_seconds,
+            silence_slots=stream_silence_slots,
         )
     if not streams:
         raise ValueError("No stream is configured in [streams].")
@@ -616,12 +766,13 @@ class StreamState:
             return
 
         now_wall = datetime.now(self.config.timezone)
+        silence_seconds = self.stream.silence_seconds_at(now_wall)
         if self.silence_started_wall is None:
             self.silence_started_wall = now_wall - timedelta(seconds=duration)
         self.silent_audio_seconds += duration
         if (
             self.silent_audio_seconds + 1e-9
-            < self.stream.silence_seconds
+            < silence_seconds
         ):
             return
 
@@ -632,14 +783,15 @@ class StreamState:
             f"Started: {format_timestamp(self.outage_started_wall)}\n"
             f"Detected: {format_timestamp(now_wall)}\n"
             f"Duration below threshold: at least "
-            f"{format_decimal(self.stream.silence_seconds)} seconds\n"
+            f"{format_decimal(silence_seconds)} seconds\n"
             f"Reason: The stream is being received, but the audio level is below "
             f"{self.config.silence_threshold_db:g} dBFS"
         )
         LOGGER.error(
-            "%s: received silence below %g dBFS",
+            "%s: received silence below %g dBFS after %.1f s",
             self.name,
             self.config.silence_threshold_db,
+            silence_seconds,
         )
         self.notifier.enqueue(message)
 
@@ -941,6 +1093,7 @@ async def run_monitor(
             or stream.recovery_seconds != config.monitor.recovery_seconds
             or stream.reconnect_delay_seconds
             != config.monitor.reconnect_delay_seconds
+            or stream.silence_slots
         ):
             LOGGER.info(
                 "%s: custom timings silence %.1f s, reception outage %.1f s, "
@@ -951,6 +1104,12 @@ async def run_monitor(
                 stream.recovery_seconds,
                 stream.reconnect_delay_seconds,
             )
+            if stream.silence_slots:
+                LOGGER.info(
+                    "%s: %d scheduled silence slots active",
+                    stream.name,
+                    len(stream.silence_slots),
+                )
     if config.monitor.startup_message:
         notifier.enqueue(
             "✅ WatchFrog started\n"

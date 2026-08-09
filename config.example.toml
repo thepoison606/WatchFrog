@@ -41,3 +41,9 @@ ping_url = "INSERT_HEALTHCHECKS_URL_HERE"
 # reception_outage_seconds = 900.0
 # recovery_seconds = 1.0
 # reconnect_delay_seconds = 2.0
+#
+# [[stream_overrides."Example Stream".silence_slots]]
+# days = ["mon", "tue", "wed", "thu", "fri"]
+# start = "08:00"
+# end = "18:00"
+# silence_seconds = 15.0

@@ -3,6 +3,7 @@ import math
 import os
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
@@ -39,6 +40,7 @@ def stream_config(
     reception_outage_seconds=600.0,
     recovery_seconds=0.5,
     reconnect_delay_seconds=1.0,
+    silence_slots=(),
 ):
     return watchfrog.StreamConfig(
         name=name,
@@ -47,6 +49,7 @@ def stream_config(
         reception_outage_seconds=reception_outage_seconds,
         recovery_seconds=recovery_seconds,
         reconnect_delay_seconds=reconnect_delay_seconds,
+        silence_slots=silence_slots,
     )
 
 
@@ -202,6 +205,90 @@ class StreamStateTests(unittest.TestCase):
         state.observe_sound(0.1)
         self.assertEqual(len(notifier.messages), 2)
 
+    def test_scheduled_silence_time_is_used(self):
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 8, 10, 12, 0, tzinfo=tz)
+
+        slot = watchfrog.SilenceSlot(
+            days=frozenset({0}),
+            start_minute=8 * 60,
+            end_minute=18 * 60,
+            silence_seconds=1.0,
+        )
+        notifier = FakeNotifier()
+        state = watchfrog.StreamState(
+            stream_config(silence_seconds=5.0, silence_slots=(slot,)),
+            monitor_config(),
+            notifier,
+        )
+        with patch("watchfrog.datetime", FixedDateTime):
+            for _ in range(10):
+                state.observe_silence(0.1)
+        self.assertEqual(len(notifier.messages), 1)
+        self.assertIn("1.0 seconds", notifier.messages[0])
+
+    def test_slot_change_applies_to_accumulated_silence(self):
+        class MovingDateTime(datetime):
+            current_hour = 7
+
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 8, 10, cls.current_hour, 0, tzinfo=tz)
+
+        slot = watchfrog.SilenceSlot(
+            days=frozenset({0}),
+            start_minute=8 * 60,
+            end_minute=18 * 60,
+            silence_seconds=1.0,
+        )
+        notifier = FakeNotifier()
+        state = watchfrog.StreamState(
+            stream_config(silence_seconds=5.0, silence_slots=(slot,)),
+            monitor_config(),
+            notifier,
+        )
+        with patch("watchfrog.datetime", MovingDateTime):
+            for _ in range(20):
+                state.observe_silence(0.1)
+            self.assertEqual(notifier.messages, [])
+            MovingDateTime.current_hour = 8
+            state.observe_silence(0.1)
+        self.assertEqual(len(notifier.messages), 1)
+        self.assertIn("1.0 seconds", notifier.messages[0])
+
+
+class SilenceSlotTests(unittest.TestCase):
+    def test_cross_midnight_slot_uses_start_day(self):
+        slot = watchfrog.SilenceSlot(
+            days=frozenset({0}),
+            start_minute=22 * 60,
+            end_minute=6 * 60,
+            silence_seconds=10.0,
+        )
+        self.assertTrue(slot.matches(datetime(2026, 8, 10, 23, 0)))
+        self.assertTrue(slot.matches(datetime(2026, 8, 11, 5, 59)))
+        self.assertFalse(slot.matches(datetime(2026, 8, 11, 6, 0)))
+        self.assertFalse(slot.matches(datetime(2026, 8, 9, 23, 0)))
+
+    def test_stream_falls_back_outside_slot(self):
+        slot = watchfrog.SilenceSlot(
+            days=frozenset({0}),
+            start_minute=8 * 60,
+            end_minute=18 * 60,
+            silence_seconds=10.0,
+        )
+        stream = stream_config(silence_seconds=5.0, silence_slots=(slot,))
+        self.assertEqual(
+            stream.silence_seconds_at(datetime(2026, 8, 10, 12, 0)),
+            10.0,
+        )
+        self.assertEqual(
+            stream.silence_seconds_at(datetime(2026, 8, 10, 20, 0)),
+            5.0,
+        )
+
 
 class ConfigTests(unittest.TestCase):
     def test_example_config_loads(self):
@@ -224,6 +311,11 @@ class ConfigTests(unittest.TestCase):
             "silence_seconds = 8.0\n"
             "reception_outage_seconds = 900.0\n"
             "recovery_seconds = 1.5\n"
+            '\n[[stream_overrides."Example Stream".silence_slots]]\n'
+            'days = ["mon", "tue", "wed", "thu", "fri"]\n'
+            'start = "08:00"\n'
+            'end = "18:00"\n'
+            "silence_seconds = 15.0\n"
         )
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"
@@ -235,6 +327,11 @@ class ConfigTests(unittest.TestCase):
             900.0,
         )
         self.assertEqual(config.streams["Example Stream"].recovery_seconds, 1.5)
+        self.assertEqual(len(config.streams["Example Stream"].silence_slots), 1)
+        self.assertEqual(
+            config.streams["Example Stream"].silence_slots[0].silence_seconds,
+            15.0,
+        )
         self.assertEqual(
             config.streams["Example Stream"].reconnect_delay_seconds,
             1.0,
@@ -248,6 +345,23 @@ class ConfigTests(unittest.TestCase):
             path = Path(directory) / "config.toml"
             path.write_text(text, encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "unknown streams"):
+                watchfrog.load_config(path)
+
+    def test_overlapping_silence_slots_are_rejected(self):
+        source = Path(__file__).parents[1] / "config.example.toml"
+        text = source.read_text(encoding="utf-8")
+        text += (
+            '\n[[stream_overrides."Example Stream".silence_slots]]\n'
+            'days = ["mon"]\nstart = "22:00"\nend = "06:00"\n'
+            "silence_seconds = 10.0\n"
+            '\n[[stream_overrides."Example Stream".silence_slots]]\n'
+            'days = ["tue"]\nstart = "05:00"\nend = "07:00"\n'
+            "silence_seconds = 20.0\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            path.write_text(text, encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "overlaps"):
                 watchfrog.load_config(path)
 
     def test_default_path_uses_watchfrog_name(self):
