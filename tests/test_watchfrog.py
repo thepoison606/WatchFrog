@@ -3,6 +3,7 @@ import math
 import os
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -14,9 +15,11 @@ import watchfrog
 class FakeNotifier:
     def __init__(self):
         self.messages = []
+        self.audio_clips = []
 
-    def enqueue(self, message):
+    def enqueue(self, message, audio_clip=None):
         self.messages.append(message)
+        self.audio_clips.append(audio_clip)
 
 
 def monitor_config():
@@ -26,6 +29,10 @@ def monitor_config():
         silence_threshold_db=-60.0,
         recovery_seconds=0.5,
         reconnect_delay_seconds=1.0,
+        audio_clip_enabled=True,
+        audio_clip_pre_seconds=10.0,
+        audio_clip_post_seconds=5.0,
+        audio_clip_max_outage_seconds=180.0,
         timezone=ZoneInfo("Europe/Berlin"),
         notify_recovery=True,
         startup_message=False,
@@ -90,6 +97,42 @@ class HealthcheckTests(unittest.TestCase):
             watchfrog.send_healthcheck_ping("not-a-url")
 
 
+class TelegramAudioTests(unittest.TestCase):
+    def test_audio_is_uploaded_as_multipart_mp3(self):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return b'{"ok": true}'
+
+        with tempfile.TemporaryDirectory() as directory:
+            audio_path = Path(directory) / "clip.mp3"
+            audio_path.write_bytes(b"example-mp3")
+            with patch(
+                "watchfrog.urllib.request.urlopen",
+                return_value=FakeResponse(),
+            ) as urlopen:
+                watchfrog.telegram_audio_api(
+                    "token",
+                    "chat",
+                    "Audio clip: Example Stream",
+                    audio_path,
+                    duration_seconds=15.0,
+                    title="Example Stream outage",
+                )
+
+        request = urlopen.call_args.args[0]
+        self.assertTrue(request.full_url.endswith("/sendAudio"))
+        self.assertIn("multipart/form-data", request.get_header("Content-type"))
+        self.assertIn(b'name="chat_id"', request.data)
+        self.assertIn(b'name="audio"', request.data)
+        self.assertIn(b"example-mp3", request.data)
+
+
 class NotifierTests(unittest.IsolatedAsyncioTestCase):
     async def test_messages_retry_until_delivered_in_order(self):
         attempts = []
@@ -118,6 +161,47 @@ class NotifierTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(attempts.count("detection"), 7)
         self.assertEqual(delivered, ["detection", "recovery"])
+
+    async def test_recovery_text_is_sent_before_additional_audio(self):
+        deliveries = []
+        with tempfile.TemporaryDirectory() as directory:
+            pcm_path = Path(directory) / "clip.pcm"
+            mp3_path = Path(directory) / "clip.mp3"
+            pcm_path.write_bytes(b"pcm")
+            mp3_path.write_bytes(b"mp3")
+            clip = watchfrog.AudioClip(
+                pcm_path=pcm_path,
+                duration_seconds=15.0,
+                stream_name="Example Stream",
+                sample_rate=8000,
+            )
+
+            def fake_message(_token, _method, parameters):
+                deliveries.append(("text", parameters["text"]))
+                return {"ok": True}
+
+            def fake_audio(*_args, **_kwargs):
+                deliveries.append(("audio", "Example Stream"))
+                return {"ok": True}
+
+            notifier = watchfrog.Notifier(
+                watchfrog.TelegramConfig("token", "chat")
+            )
+            with (
+                patch("watchfrog.telegram_api", side_effect=fake_message),
+                patch("watchfrog.telegram_audio_api", side_effect=fake_audio),
+                patch("watchfrog.encode_audio_clip", return_value=mp3_path),
+                patch("watchfrog.asyncio.sleep", new_callable=AsyncMock),
+            ):
+                notifier.start()
+                notifier.enqueue("recovery", clip)
+                await asyncio.wait_for(notifier.queue.join(), timeout=1.0)
+                await notifier.stop()
+
+        self.assertEqual(
+            deliveries,
+            [("text", "recovery"), ("audio", "Example Stream")],
+        )
 
 
 class StreamStateTests(unittest.TestCase):
@@ -204,6 +288,64 @@ class StreamStateTests(unittest.TestCase):
         self.assertEqual(len(notifier.messages), 1)
         state.observe_sound(0.1)
         self.assertEqual(len(notifier.messages), 2)
+
+    def test_recovery_clip_contains_pre_roll_outage_and_post_roll(self):
+        notifier = FakeNotifier()
+        config = replace(
+            monitor_config(),
+            audio_clip_pre_seconds=0.2,
+            audio_clip_post_seconds=0.2,
+            audio_clip_max_outage_seconds=0.2,
+        )
+        state = watchfrog.StreamState(
+            stream_config(silence_seconds=0.2, recovery_seconds=0.2),
+            config,
+            notifier,
+        )
+        sound_before = b"A" * 1600
+        silence = b"B" * 1600
+        sound_after = b"C" * 1600
+        state.observe_sound(0.1, sound_before)
+        state.observe_sound(0.1, sound_before)
+        state.observe_silence(0.1, silence)
+        state.observe_silence(0.1, silence)
+        state.observe_sound(0.1, sound_after)
+        state.observe_sound(0.1, sound_after)
+
+        clip = notifier.audio_clips[1]
+        self.assertIsNotNone(clip)
+        assert clip is not None
+        try:
+            self.assertEqual(
+                clip.pcm_path.read_bytes(),
+                sound_before * 2 + silence * 2 + sound_after * 2,
+            )
+            self.assertAlmostEqual(clip.duration_seconds, 0.6)
+        finally:
+            clip.pcm_path.unlink(missing_ok=True)
+        self.assertIn("WatchFrog – Audio recovered", notifier.messages[1])
+
+    def test_outage_over_three_minutes_keeps_text_but_omits_audio(self):
+        notifier = FakeNotifier()
+        config = replace(
+            monitor_config(),
+            audio_clip_pre_seconds=0.1,
+            audio_clip_post_seconds=0.1,
+            audio_clip_max_outage_seconds=0.2,
+        )
+        state = watchfrog.StreamState(
+            stream_config(silence_seconds=0.1, recovery_seconds=0.1),
+            config,
+            notifier,
+        )
+        chunk = b"\x00\x00" * 800
+        for _ in range(3):
+            state.observe_silence(0.1, chunk)
+        state.observe_sound(0.1, chunk)
+
+        self.assertEqual(len(notifier.messages), 2)
+        self.assertIsNone(notifier.audio_clips[1])
+        self.assertIn("Audio clip omitted", notifier.messages[1])
 
     def test_scheduled_silence_time_is_used(self):
         class FixedDateTime(datetime):
@@ -302,6 +444,8 @@ class ConfigTests(unittest.TestCase):
             600.0,
         )
         self.assertFalse(config.telegram.enabled)
+        self.assertTrue(config.monitor.audio_clip_enabled)
+        self.assertEqual(config.monitor.audio_clip_max_outage_seconds, 180.0)
 
     def test_stream_overrides_inherit_defaults(self):
         source = Path(__file__).parents[1] / "config.example.toml"

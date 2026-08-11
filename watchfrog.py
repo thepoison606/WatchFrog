@@ -13,23 +13,28 @@ import os
 import shutil
 import signal
 import ssl
+import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from array import array
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 APP_NAME = "WatchFrog"
 CHUNK_SECONDS = 0.1
 TELEGRAM_SEND_INTERVAL_SECONDS = 1.0
+TELEGRAM_MAX_AUDIO_BYTES = 49_000_000
 LOGGER = logging.getLogger("watchfrog")
 DAY_NUMBERS = {
     "mon": 0,
@@ -109,6 +114,10 @@ class MonitorConfig:
     silence_threshold_db: float
     recovery_seconds: float
     reconnect_delay_seconds: float
+    audio_clip_enabled: bool
+    audio_clip_pre_seconds: float
+    audio_clip_post_seconds: float
+    audio_clip_max_outage_seconds: float
     timezone: ZoneInfo
     notify_recovery: bool
     startup_message: bool
@@ -165,6 +174,20 @@ class TelegramConfig:
     @property
     def enabled(self) -> bool:
         return bool(self.bot_token and self.chat_id)
+
+
+@dataclass(frozen=True)
+class AudioClip:
+    pcm_path: Path
+    duration_seconds: float
+    stream_name: str
+    sample_rate: int
+
+
+@dataclass(frozen=True)
+class OutgoingNotification:
+    text: str
+    audio_clip: AudioClip | None = None
 
 
 @dataclass(frozen=True)
@@ -336,6 +359,15 @@ def load_config(path: Path) -> AppConfig:
         reconnect_delay_seconds = float(
             monitor_data.get("reconnect_delay_seconds", 1.0)
         )
+        audio_clip_pre_seconds = float(
+            monitor_data.get("audio_clip_pre_seconds", 10.0)
+        )
+        audio_clip_post_seconds = float(
+            monitor_data.get("audio_clip_post_seconds", 5.0)
+        )
+        audio_clip_max_outage_seconds = float(
+            monitor_data.get("audio_clip_max_outage_seconds", 180.0)
+        )
         sample_rate = int(monitor_data.get("sample_rate", 8000))
         timezone_name = str(monitor_data.get("timezone", "Europe/Berlin"))
         timezone = ZoneInfo(timezone_name)
@@ -356,6 +388,14 @@ def load_config(path: Path) -> AppConfig:
         raise ValueError("recovery_seconds must be greater than 0.")
     if reconnect_delay_seconds < 0:
         raise ValueError("reconnect_delay_seconds must not be negative.")
+    if audio_clip_pre_seconds < 0:
+        raise ValueError("audio_clip_pre_seconds must not be negative.")
+    if audio_clip_post_seconds < 0:
+        raise ValueError("audio_clip_post_seconds must not be negative.")
+    if audio_clip_max_outage_seconds <= 0:
+        raise ValueError(
+            "audio_clip_max_outage_seconds must be greater than 0."
+        )
     if not 1000 <= sample_rate <= 48000:
         raise ValueError("sample_rate must be between 1000 and 48000.")
 
@@ -472,6 +512,12 @@ def load_config(path: Path) -> AppConfig:
             silence_threshold_db=silence_threshold_db,
             recovery_seconds=recovery_seconds,
             reconnect_delay_seconds=reconnect_delay_seconds,
+            audio_clip_enabled=bool(
+                monitor_data.get("audio_clip_enabled", True)
+            ),
+            audio_clip_pre_seconds=audio_clip_pre_seconds,
+            audio_clip_post_seconds=audio_clip_post_seconds,
+            audio_clip_max_outage_seconds=audio_clip_max_outage_seconds,
             timezone=timezone,
             notify_recovery=bool(monitor_data.get("notify_recovery", True)),
             startup_message=bool(monitor_data.get("startup_message", True)),
@@ -555,6 +601,112 @@ def telegram_api(
     return payload
 
 
+def telegram_audio_api(
+    token: str,
+    chat_id: str,
+    caption: str,
+    audio_path: Path,
+    *,
+    duration_seconds: float,
+    title: str,
+    timeout: float = 60.0,
+) -> dict[str, Any]:
+    audio_data = audio_path.read_bytes()
+    if len(audio_data) > TELEGRAM_MAX_AUDIO_BYTES:
+        raise RuntimeError(
+            f"Telegram audio exceeds {TELEGRAM_MAX_AUDIO_BYTES} bytes."
+        )
+
+    boundary = f"WatchFrog-{uuid.uuid4().hex}"
+    body = bytearray()
+
+    def add_field(name: str, value: str) -> None:
+        body.extend(f"--{boundary}\r\n".encode("ascii"))
+        body.extend(
+            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode(
+                "ascii"
+            )
+        )
+        body.extend(value.encode("utf-8"))
+        body.extend(b"\r\n")
+
+    add_field("chat_id", chat_id)
+    add_field("caption", caption)
+    add_field("duration", str(max(0, round(duration_seconds))))
+    add_field("performer", APP_NAME)
+    add_field("title", title)
+    body.extend(f"--{boundary}\r\n".encode("ascii"))
+    body.extend(
+        b'Content-Disposition: form-data; name="audio"; '
+        b'filename="watchfrog-outage.mp3"\r\n'
+    )
+    body.extend(b"Content-Type: audio/mpeg\r\n\r\n")
+    body.extend(audio_data)
+    body.extend(b"\r\n")
+    body.extend(f"--{boundary}--\r\n".encode("ascii"))
+
+    request = urllib.request.Request(
+        f"https://api.telegram.org/bot{token}/sendAudio",
+        data=bytes(body),
+        headers={
+            "User-Agent": "WatchFrog/2.0",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(
+            request, timeout=timeout, context=SSL_CONTEXT
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Telegram HTTP {exc.code}: {detail}") from exc
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise RuntimeError(f"Telegram is unreachable: {exc}") from exc
+    if not payload.get("ok"):
+        raise RuntimeError(f"Telegram error: {payload}")
+    return payload
+
+
+def encode_audio_clip(clip: AudioClip, ffmpeg_path: str) -> Path:
+    output_path = clip.pcm_path.with_suffix(".mp3")
+    command = [
+        ffmpeg_path,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-f",
+        "s16le",
+        "-ar",
+        str(clip.sample_rate),
+        "-ac",
+        "1",
+        "-i",
+        str(clip.pcm_path),
+        "-codec:a",
+        "libmp3lame",
+        "-b:a",
+        "24k",
+        str(output_path),
+    ]
+    result = subprocess.run(
+        command,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        output_path.unlink(missing_ok=True)
+        detail = result.stderr.strip() or f"exit code {result.returncode}"
+        raise RuntimeError(f"Could not encode Telegram audio: {detail}")
+    if output_path.stat().st_size > TELEGRAM_MAX_AUDIO_BYTES:
+        output_path.unlink(missing_ok=True)
+        raise RuntimeError("Encoded Telegram audio exceeds the upload limit.")
+    return output_path
+
+
 def send_healthcheck_ping(url: str, *, timeout: float = 10.0) -> None:
     validate_http_url(url, "Healthchecks.io ping URL")
     request = urllib.request.Request(
@@ -576,10 +728,17 @@ def send_healthcheck_ping(url: str, *, timeout: float = 10.0) -> None:
 
 
 class Notifier:
-    def __init__(self, telegram: TelegramConfig, disabled: bool = False) -> None:
+    def __init__(
+        self,
+        telegram: TelegramConfig,
+        disabled: bool = False,
+        *,
+        ffmpeg_path: str = "ffmpeg",
+    ) -> None:
         self.telegram = telegram
         self.disabled = disabled
-        self.queue: asyncio.Queue[str | None] = asyncio.Queue()
+        self.ffmpeg_path = ffmpeg_path
+        self.queue: asyncio.Queue[OutgoingNotification | None] = asyncio.Queue()
         self.task: asyncio.Task[None] | None = None
 
     @property
@@ -589,18 +748,23 @@ class Notifier:
     def start(self) -> None:
         self.task = asyncio.create_task(self._worker(), name="telegram-notifier")
 
-    def enqueue(self, message: str) -> None:
+    def enqueue(self, message: str, audio_clip: AudioClip | None = None) -> None:
         if not self.active:
             LOGGER.warning("Notification (Telegram inactive):\n%s", message)
+            if audio_clip is not None:
+                audio_clip.pcm_path.unlink(missing_ok=True)
             return
-        self.queue.put_nowait(message)
+        self.queue.put_nowait(OutgoingNotification(message, audio_clip))
 
     async def _worker(self) -> None:
         while True:
-            message = await self.queue.get()
+            notification = await self.queue.get()
+            encoded_audio_path: Path | None = None
             try:
-                if message is None:
+                if notification is None:
                     return
+                message = notification.text
+                audio_clip = notification.audio_clip
                 delay = 1.0
                 attempt = 0
                 summary = message.splitlines()[0]
@@ -631,7 +795,53 @@ class Notifier:
                         )
                         await asyncio.sleep(delay)
                         delay = min(delay * 2, 60.0)
+
+                if audio_clip is not None:
+                    try:
+                        encoded_audio_path = await asyncio.to_thread(
+                            encode_audio_clip,
+                            audio_clip,
+                            self.ffmpeg_path,
+                        )
+                    except Exception as exc:
+                        LOGGER.error("Audio clip encoding failed: %s", exc)
+                    finally:
+                        audio_clip.pcm_path.unlink(missing_ok=True)
+
+                if encoded_audio_path is not None and audio_clip is not None:
+                    delay = 1.0
+                    attempt = 0
+                    while True:
+                        attempt += 1
+                        try:
+                            await asyncio.to_thread(
+                                telegram_audio_api,
+                                self.telegram.bot_token,
+                                self.telegram.chat_id,
+                                f"Audio clip: {audio_clip.stream_name}",
+                                encoded_audio_path,
+                                duration_seconds=audio_clip.duration_seconds,
+                                title=f"{audio_clip.stream_name} outage",
+                            )
+                            LOGGER.info(
+                                "Telegram audio sent: %s", audio_clip.stream_name
+                            )
+                            await asyncio.sleep(TELEGRAM_SEND_INTERVAL_SECONDS)
+                            break
+                        except Exception as exc:
+                            LOGGER.error(
+                                "Telegram audio delivery attempt %d failed for "
+                                "%s; retrying in %.0f s: %s",
+                                attempt,
+                                audio_clip.stream_name,
+                                delay,
+                                exc,
+                            )
+                            await asyncio.sleep(delay)
+                            delay = min(delay * 2, 60.0)
             finally:
+                if encoded_audio_path is not None:
+                    encoded_audio_path.unlink(missing_ok=True)
                 self.queue.task_done()
 
     async def stop(self) -> None:
@@ -646,6 +856,11 @@ class Notifier:
             )
             self.task.cancel()
             await asyncio.gather(self.task, return_exceptions=True)
+            while not self.queue.empty():
+                pending = self.queue.get_nowait()
+                if pending is not None and pending.audio_clip is not None:
+                    pending.audio_clip.pcm_path.unlink(missing_ok=True)
+                self.queue.task_done()
             self.task = None
             return
         self.queue.put_nowait(None)
@@ -673,6 +888,14 @@ class StreamState:
         self.silence_started_wall: datetime | None = None
         self.silent_audio_seconds = 0.0
         self.recovery_audio_seconds = 0.0
+        pre_roll_chunks = math.ceil(
+            config.audio_clip_pre_seconds / CHUNK_SECONDS
+        )
+        self._pre_roll: deque[bytes] = deque(maxlen=pre_roll_chunks)
+        self._clip_file: BinaryIO | None = None
+        self._clip_path: Path | None = None
+        self._clip_duration_seconds = 0.0
+        self._clip_outage_exceeded = False
 
     @property
     def is_outage(self) -> bool:
@@ -760,16 +983,107 @@ class StreamState:
         )
         self.notifier.enqueue(message)
 
-    def observe_silence(self, duration: float) -> None:
+    def _remember_pcm(self, chunk: bytes | None) -> None:
+        if chunk is not None and self._pre_roll.maxlen:
+            self._pre_roll.append(chunk)
+
+    def _start_audio_clip(self) -> None:
+        if not self.config.audio_clip_enabled or self._clip_file is not None:
+            return
+        try:
+            handle = tempfile.NamedTemporaryFile(
+                mode="w+b",
+                prefix="watchfrog-",
+                suffix=".pcm",
+                delete=False,
+            )
+            self._clip_file = handle
+            self._clip_path = Path(handle.name)
+            for chunk in self._pre_roll:
+                handle.write(chunk)
+                self._clip_duration_seconds += len(chunk) / (
+                    self.config.sample_rate * 2
+                )
+        except OSError as exc:
+            LOGGER.error("%s: could not start audio clip: %s", self.name, exc)
+            self._discard_audio_clip()
+
+    def _append_audio_clip(
+        self, chunk: bytes | None, duration: float
+    ) -> None:
+        if self._clip_file is None or chunk is None:
+            return
+        try:
+            self._clip_file.write(chunk)
+            self._clip_duration_seconds += duration
+        except OSError as exc:
+            LOGGER.error("%s: could not write audio clip: %s", self.name, exc)
+            self._discard_audio_clip()
+
+    def _discard_audio_clip(self) -> None:
+        if self._clip_file is not None:
+            try:
+                self._clip_file.close()
+            except OSError:
+                pass
+        self._clip_file = None
+        if self._clip_path is not None:
+            self._clip_path.unlink(missing_ok=True)
+        self._clip_path = None
+        self._clip_duration_seconds = 0.0
+
+    def _finish_audio_clip(self) -> AudioClip | None:
+        if self._clip_file is None or self._clip_path is None:
+            return None
+        try:
+            self._clip_file.flush()
+            self._clip_file.close()
+        except OSError as exc:
+            LOGGER.error("%s: could not finish audio clip: %s", self.name, exc)
+            self._discard_audio_clip()
+            return None
+        clip = AudioClip(
+            pcm_path=self._clip_path,
+            duration_seconds=self._clip_duration_seconds,
+            stream_name=self.name,
+            sample_rate=self.config.sample_rate,
+        )
+        self._clip_file = None
+        self._clip_path = None
+        self._clip_duration_seconds = 0.0
+        return clip
+
+    def observe_silence(
+        self, duration: float, chunk: bytes | None = None
+    ) -> None:
         self.recovery_audio_seconds = 0.0
+        now_wall = datetime.now(self.config.timezone)
+        if self.silence_started_wall is None:
+            self.silence_started_wall = now_wall - timedelta(seconds=duration)
+            if chunk is not None:
+                self._start_audio_clip()
+        self.silent_audio_seconds += duration
+        self._append_audio_clip(chunk, duration)
+        self._remember_pcm(chunk)
+
+        if (
+            self.config.audio_clip_enabled
+            and not self._clip_outage_exceeded
+            and self.silent_audio_seconds
+            > self.config.audio_clip_max_outage_seconds + 1e-9
+        ):
+            self._clip_outage_exceeded = True
+            self._discard_audio_clip()
+            LOGGER.info(
+                "%s: audio clip omitted because silence exceeded %.1f s",
+                self.name,
+                self.config.audio_clip_max_outage_seconds,
+            )
+
         if self.is_outage:
             return
 
-        now_wall = datetime.now(self.config.timezone)
         silence_seconds = self.stream.silence_seconds_at(now_wall)
-        if self.silence_started_wall is None:
-            self.silence_started_wall = now_wall - timedelta(seconds=duration)
-        self.silent_audio_seconds += duration
         if (
             self.silent_audio_seconds + 1e-9
             < silence_seconds
@@ -795,16 +1109,30 @@ class StreamState:
         )
         self.notifier.enqueue(message)
 
-    def observe_sound(self, duration: float) -> None:
+    def observe_sound(
+        self, duration: float, chunk: bytes | None = None
+    ) -> None:
         now_wall = datetime.now(self.config.timezone)
         self.silence_started_wall = None
-        self.silent_audio_seconds = 0.0
 
         if not self.is_outage:
+            self._discard_audio_clip()
+            self._clip_outage_exceeded = False
+            self.silent_audio_seconds = 0.0
             self.recovery_audio_seconds = 0.0
+            self._remember_pcm(chunk)
             return
+
+        self._append_audio_clip(chunk, duration)
+        self._remember_pcm(chunk)
         self.recovery_audio_seconds += duration
-        if self.recovery_audio_seconds + 1e-9 < self.stream.recovery_seconds:
+        recovery_seconds = self.stream.recovery_seconds
+        if self._clip_file is not None:
+            recovery_seconds = max(
+                recovery_seconds,
+                self.config.audio_clip_post_seconds,
+            )
+        if self.recovery_audio_seconds + 1e-9 < recovery_seconds:
             return
 
         assert self.outage_started_wall is not None
@@ -817,18 +1145,36 @@ class StreamState:
             f"Recovered: {format_timestamp(now_wall)}\n"
             f"Outage duration: {format_duration(outage_duration)}"
         )
+        audio_clip: AudioClip | None = None
+        if self.config.notify_recovery:
+            audio_clip = self._finish_audio_clip()
+        else:
+            self._discard_audio_clip()
+        if self._clip_outage_exceeded:
+            message += (
+                "\nAudio clip omitted: the outage exceeded "
+                f"{format_duration(self.config.audio_clip_max_outage_seconds)}."
+            )
         LOGGER.info("%s: audio recovered after %.1f s", self.name, outage_duration)
         if self.config.notify_recovery:
-            self.notifier.enqueue(message)
+            self.notifier.enqueue(message, audio_clip)
         self.outage_started_wall = None
+        self.silent_audio_seconds = 0.0
         self.recovery_audio_seconds = 0.0
+        self._clip_outage_exceeded = False
 
     def reset_silence_candidate(self) -> None:
         """Do not combine silence periods across reception gaps."""
         self.recovery_audio_seconds = 0.0
+        self._pre_roll.clear()
         if not self.is_outage:
             self.silence_started_wall = None
             self.silent_audio_seconds = 0.0
+            self._clip_outage_exceeded = False
+            self._discard_audio_clip()
+
+    def close(self) -> None:
+        self._discard_audio_clip()
 
 
 def format_decimal(value: float) -> str:
@@ -968,9 +1314,9 @@ async def decode_stream_once(
                 del buffer[:bytes_per_chunk]
                 level = pcm_dbfs(chunk)
                 if level > config.silence_threshold_db:
-                    state.observe_sound(CHUNK_SECONDS)
+                    state.observe_sound(CHUNK_SECONDS, chunk)
                 else:
-                    state.observe_silence(CHUNK_SECONDS)
+                    state.observe_silence(CHUNK_SECONDS, chunk)
         if not stop_event.is_set():
             return_code = await process.wait()
             raise RuntimeError(f"ffmpeg exited with code {return_code}")
@@ -989,42 +1335,45 @@ async def monitor_stream(
     state = StreamState(stream, config, notifier)
     state.mark_reception_missing()
     retry_delay = stream.reconnect_delay_seconds
-    while not stop_event.is_set():
-        previous_pcm_mono = state.last_pcm_mono
-        try:
-            await decode_stream_once(
-                stream,
-                state,
-                config,
-                ffmpeg_path,
-                stop_event,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            state.reset_silence_candidate()
-            LOGGER.warning(
-                "%s: reception error; reconnecting: %s",
-                stream.name,
-                exc,
-            )
-            if state.last_pcm_mono != previous_pcm_mono:
-                retry_delay = stream.reconnect_delay_seconds
-            else:
-                retry_delay = min(max(1.0, retry_delay * 2), 30.0)
-        if not stop_event.is_set():
-            state.check_reception_outage()
-            alert_delay = state.reception_alert_delay()
-            wait_timeout = retry_delay
-            if alert_delay is not None:
-                wait_timeout = min(wait_timeout, alert_delay)
+    try:
+        while not stop_event.is_set():
+            previous_pcm_mono = state.last_pcm_mono
             try:
-                await asyncio.wait_for(
-                    stop_event.wait(), timeout=wait_timeout
+                await decode_stream_once(
+                    stream,
+                    state,
+                    config,
+                    ffmpeg_path,
+                    stop_event,
                 )
-            except asyncio.TimeoutError:
-                pass
-            state.check_reception_outage()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                state.reset_silence_candidate()
+                LOGGER.warning(
+                    "%s: reception error; reconnecting: %s",
+                    stream.name,
+                    exc,
+                )
+                if state.last_pcm_mono != previous_pcm_mono:
+                    retry_delay = stream.reconnect_delay_seconds
+                else:
+                    retry_delay = min(max(1.0, retry_delay * 2), 30.0)
+            if not stop_event.is_set():
+                state.check_reception_outage()
+                alert_delay = state.reception_alert_delay()
+                wait_timeout = retry_delay
+                if alert_delay is not None:
+                    wait_timeout = min(wait_timeout, alert_delay)
+                try:
+                    await asyncio.wait_for(
+                        stop_event.wait(), timeout=wait_timeout
+                    )
+                except asyncio.TimeoutError:
+                    pass
+                state.check_reception_outage()
+    finally:
+        state.close()
 
 
 async def healthcheck_loop(
@@ -1067,7 +1416,11 @@ async def run_monitor(
         except NotImplementedError:
             pass
 
-    notifier = Notifier(config.telegram, disabled=notifications_disabled)
+    notifier = Notifier(
+        config.telegram,
+        disabled=notifications_disabled,
+        ffmpeg_path=ffmpeg_path,
+    )
     notifier.start()
     if not notifier.active:
         LOGGER.warning(

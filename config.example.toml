@@ -14,6 +14,15 @@ silence_threshold_db = -60.0
 # Audio must be present for this long before a recovery notification is sent.
 recovery_seconds = 0.5
 reconnect_delay_seconds = 1.0
+
+# Attach an MP3 to silence-recovery notifications. It contains 10 seconds from
+# before the silence, the outage, and 5 seconds of recovered audio. Outages
+# longer than 3 minutes still get text notifications, but no audio attachment.
+audio_clip_enabled = true
+audio_clip_pre_seconds = 10.0
+audio_clip_post_seconds = 5.0
+audio_clip_max_outage_seconds = 180.0
+
 timezone = "Europe/Berlin"
 notify_recovery = true
 startup_message = true

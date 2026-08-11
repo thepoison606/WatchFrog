@@ -97,6 +97,10 @@ reception_outage_seconds = 600.0
 silence_threshold_db = -60.0
 recovery_seconds = 0.5
 reconnect_delay_seconds = 1.0
+audio_clip_enabled = true
+audio_clip_pre_seconds = 10.0
+audio_clip_post_seconds = 5.0
+audio_clip_max_outage_seconds = 180.0
 ```
 
 - `silence_seconds`: duration of received silence before an alert
@@ -105,6 +109,18 @@ reconnect_delay_seconds = 1.0
 - `silence_threshold_db`: RMS level threshold in dBFS
 - `recovery_seconds`: duration of audible audio before a recovery notification
 - `reconnect_delay_seconds`: delay before a new connection attempt
+- `audio_clip_enabled`: attach an MP3 after a received-silence recovery
+- `audio_clip_pre_seconds`: audio retained before the silence starts
+- `audio_clip_post_seconds`: recovered audio included after sound returns
+- `audio_clip_max_outage_seconds`: maximum silence duration eligible for an
+  audio attachment; the default is 180 seconds (3 minutes)
+
+The regular recovery text notification is always sent when `notify_recovery`
+is enabled. For eligible received-silence outages, a separate MP3 follows. It
+contains the configured pre-roll, the complete silence, and the configured
+post-roll. Longer outages still produce detection and recovery text messages,
+but no audio attachment. Reception outages cannot include a clip because no
+decodable audio is available while the connection is interrupted.
 
 Timing values can be overridden per stream. Omitted values inherit the global
 default:
